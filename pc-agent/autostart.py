@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -22,10 +23,13 @@ STARTUP_DIR = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Men
 LAUNCHER = STARTUP_DIR / "BOT agent.vbs"
 
 
-def pythonw() -> Path:
+def python_exe() -> Path:
+    # Use python.exe (not pythonw.exe) with a hidden window, so the Windows Firewall
+    # permission you already gave python.exe also covers the background BOT.
     exe = Path(sys.executable)
-    w = exe.with_name("pythonw.exe")
-    return w if w.exists() else exe
+    if exe.name.lower() == "pythonw.exe":
+        exe = exe.with_name("python.exe")
+    return exe
 
 
 def running_pid() -> int | None:
@@ -42,9 +46,18 @@ def start_now() -> None:
     if running_pid():
         print("BOT is already running in the background.")
         return
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([str(pythonw()), str(AGENT)], cwd=HERE, creationflags=flags, close_fds=True)
-    print("BOT started in the background.")
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen([str(python_exe()), str(AGENT)], cwd=HERE, creationflags=flags, close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(20):  # wait up to 5 s for it to come up
+        time.sleep(0.25)
+        if running_pid():
+            print("BOT started in the background.")
+            return
+    print("BOT did not start. See the last lines of bot.log:")
+    log = HERE / "bot.log"
+    if log.exists():
+        print("\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]))
 
 
 def stop() -> None:
@@ -63,7 +76,7 @@ def vbs_quote(s: str) -> str:
 
 def on() -> None:
     STARTUP_DIR.mkdir(parents=True, exist_ok=True)
-    cmd = f'"{pythonw()}" "{AGENT}"'
+    cmd = f'"{python_exe()}" "{AGENT}"'
     script = (
         'Set sh = CreateObject("WScript.Shell")\r\n'
         f"sh.CurrentDirectory = {vbs_quote(str(HERE))}\r\n"
