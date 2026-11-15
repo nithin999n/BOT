@@ -9,6 +9,8 @@ import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'discovery.dart';
+
 void main() => runApp(const BotApp());
 
 class BotApp extends StatelessWidget {
@@ -62,10 +64,11 @@ class LogEntry {
 }
 
 class ConnSettings {
-  const ConnSettings(this.host, this.port, this.pin);
+  const ConnSettings(this.host, this.port, this.pin, this.name);
   final String host;
   final int port;
   final String pin;
+  final String name; // PC name, used to find it again if its IP changes
 }
 
 class HomePage extends StatefulWidget {
@@ -91,6 +94,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Link _link = Link.offline;
   bool _autoReconnect = false;
   Timer? _retryTimer;
+  int _failures = 0;
+  bool _rediscovering = false;
   String _pcName = '';
 
   // Settings
@@ -142,6 +147,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _host = prefs.getString('host') ?? '';
       _port = prefs.getInt('port') ?? 8765;
       _pin = prefs.getString('pin') ?? '';
+      _pcName = prefs.getString('pcName') ?? '';
       _lang = (lang >= 0 && lang < languages.length) ? lang : 0;
     });
     if (_host.isEmpty || _pin.isEmpty) {
@@ -154,19 +160,52 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _openSettings() async {
     final result = await showDialog<ConnSettings>(
       context: context,
-      builder: (_) => SettingsDialog(initial: ConnSettings(_host, _port, _pin)),
+      builder: (_) => SettingsDialog(initial: ConnSettings(_host, _port, _pin, _pcName)),
     );
     if (result == null || !mounted) return;
     setState(() {
       _host = result.host;
       _port = result.port;
       _pin = result.pin;
+      _pcName = result.name;
+      _failures = 0;
     });
+    await _saveConnection();
+    _connect();
+  }
+
+  Future<void> _saveConnection() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('host', _host);
     await prefs.setInt('port', _port);
     await prefs.setString('pin', _pin);
-    _connect();
+    await prefs.setString('pcName', _pcName);
+  }
+
+  /// The PC's IP can change (router restart). Look for it on Wi-Fi and follow it.
+  Future<void> _rediscover() async {
+    if (_rediscovering) return;
+    _rediscovering = true;
+    try {
+      final pcs = await discoverPcs();
+      if (!mounted || pcs.isEmpty) return;
+      FoundPc? pick;
+      for (final pc in pcs) {
+        if (pc.name == _pcName) pick = pc;
+      }
+      if (pick == null && pcs.length == 1) pick = pcs.first;
+      final found = pick;
+      if (found == null || (found.host == _host && found.port == _port)) return;
+      setState(() {
+        _host = found.host;
+        _port = found.port;
+        _pcName = found.name;
+      });
+      await _saveConnection();
+      _addLog('Found ${found.name} at its new address ${found.host}');
+    } finally {
+      _rediscovering = false;
+    }
   }
 
   Future<void> _setLang(int i) async {
@@ -212,6 +251,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _channel = null;
       dead?.sink.close();
       if (!mounted) return;
+      _failures++;
       setState(() => _link = Link.offline);
       _scheduleRetry();
     }
@@ -222,6 +262,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final wasOnline = _link == Link.online;
     _channel = null;
     _sub = null;
+    _failures++;
     setState(() => _link = Link.offline);
     if (wasOnline) _addLog('Disconnected from PC', ok: false);
     _scheduleRetry();
@@ -230,7 +271,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _scheduleRetry() {
     if (!_autoReconnect) return;
     _retryTimer?.cancel();
-    _retryTimer = Timer(const Duration(seconds: 3), () {
+    final delay = Duration(seconds: _failures < 5 ? 3 : 10);
+    _retryTimer = Timer(delay, () async {
+      if (!mounted || !_autoReconnect || _link != Link.offline) return;
+      if (_failures >= 2) await _rediscover();
       if (mounted && _autoReconnect && _link == Link.offline) _connect();
     });
   }
@@ -251,8 +295,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case 'welcome':
         setState(() {
           _link = Link.online;
+          _failures = 0;
           _pcName = (msg['pc'] ?? 'PC').toString();
         });
+        _saveConnection();
         _addLog('Connected to $_pcName');
       case 'result':
         _addLog(text, ok: msg['ok'] == true);
@@ -617,7 +663,36 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController _host = TextEditingController(text: widget.initial.host);
   late final TextEditingController _port = TextEditingController(text: widget.initial.port.toString());
   late final TextEditingController _pin = TextEditingController(text: widget.initial.pin);
+  late String _name = widget.initial.name;
   String? _error;
+  bool _searching = true; // a search starts as soon as the dialog opens
+  List<FoundPc> _found = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _search();
+  }
+
+  Future<void> _search() async {
+    if (!_searching) setState(() => _searching = true);
+    final pcs = await discoverPcs();
+    if (!mounted) return;
+    setState(() {
+      _searching = false;
+      _found = pcs;
+    });
+    if (pcs.length == 1 && _host.text.trim().isEmpty) _pick(pcs.first);
+  }
+
+  void _pick(FoundPc pc) {
+    setState(() {
+      _host.text = pc.host;
+      _port.text = pc.port.toString();
+      _name = pc.name;
+      _error = null;
+    });
+  }
 
   @override
   void dispose() {
@@ -637,24 +712,83 @@ class _SettingsDialogState extends State<SettingsDialog> {
     }
     final pin = _pin.text.trim();
     if (host.isEmpty || port <= 0 || port > 65535 || pin.isEmpty) {
-      setState(() => _error = 'Please fill in the IP address, port and PIN.');
+      setState(() => _error = host.isEmpty
+          ? 'Pick your PC from the list (or type its IP address).'
+          : 'Please enter the PIN shown on the PC.');
       return;
     }
-    Navigator.pop(context, ConnSettings(host, port, pin));
+    // Keep the remembered PC name only if it still belongs to this address.
+    final name = (host == widget.initial.host || _found.any((p) => p.host == host && p.name == _name)) ? _name : '';
+    Navigator.pop(context, ConnSettings(host, port, pin, name));
+  }
+
+  Widget _foundList(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    if (_searching) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Row(children: [
+          SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          SizedBox(width: 12),
+          Text('Looking for your PC on Wi-Fi…'),
+        ]),
+      );
+    }
+    if (_found.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('No PC found. Check that BOT is running on the PC and both are on the same Wi-Fi, '
+              'or type the IP address below.',
+              style: TextStyle(color: cs.onSurfaceVariant)),
+          TextButton.icon(onPressed: _search, icon: const Icon(Icons.refresh), label: const Text('Search again')),
+        ],
+      );
+    }
+    return Column(
+      children: [
+        for (final pc in _found)
+          Card(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            color: _host.text.trim() == pc.host ? cs.primaryContainer : null,
+            child: ListTile(
+              leading: const Icon(Icons.computer),
+              title: Text(pc.name),
+              subtitle: Text('${pc.host}:${pc.port}'),
+              trailing: _host.text.trim() == pc.host ? const Icon(Icons.check_circle) : null,
+              onTap: () => _pick(pc),
+            ),
+          ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(onPressed: _search, icon: const Icon(Icons.refresh), label: const Text('Search again')),
+        ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Connect to your PC'),
-      content: SingleChildScrollView(
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Start BOT on your PC (start_bot.bat). It shows the IP address and PIN. '
-                'Phone and PC must be on the same Wi-Fi.'),
-            const SizedBox(height: 12),
+            _foundList(context),
+            const SizedBox(height: 8),
+            const Text('Then enter the PIN shown on the PC (or run "python autostart.py status").'),
+            TextField(
+              controller: _pin,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'PIN'),
+              onSubmitted: (_) => _save(),
+            ),
+            const SizedBox(height: 16),
+            Text('Manual address', style: Theme.of(context).textTheme.labelLarge),
             TextField(
               controller: _host,
               keyboardType: TextInputType.url,
@@ -665,17 +799,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(labelText: 'Port'),
             ),
-            TextField(
-              controller: _pin,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'PIN'),
-              onSubmitted: (_) => _save(),
-            ),
             if (_error != null) ...[
               const SizedBox(height: 8),
               Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ],
           ],
+        ),
         ),
       ),
       actions: [

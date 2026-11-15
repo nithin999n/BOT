@@ -1,6 +1,12 @@
 # PC agent
 pc-agent/config.json
 pc-agent/unmatched.txt
+pc-agent/bot.log*
+pc-agent/bot.pid
+*.keystore
+*.jks
+*.p12
+keystore-base64.txt
 __pycache__/
 *.pyc
 .venv/

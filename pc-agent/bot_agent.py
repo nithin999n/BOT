@@ -3,7 +3,8 @@ BOT PC agent: listens on your Wi-Fi for commands from the BOT phone app.
 
     python bot_agent.py
 
-It prints this PC's IP address and a PIN; type those into the phone app once.
+It prints this PC's IP address and a PIN; type the PIN into the phone app once.
+The phone finds the PC by itself (UDP discovery on port 8766).
 """
 from __future__ import annotations
 
@@ -11,12 +12,14 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import secrets
 import socket
 import sys
 import time
 import uuid
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import websockets
@@ -27,7 +30,11 @@ import matcher
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
 UNMATCHED_PATH = HERE / "unmatched.txt"
+LOG_PATH = HERE / "bot.log"
+PID_PATH = HERE / "bot.pid"
 DEFAULT_PORT = 8765
+DISCOVERY_PORT = 8766
+DISCOVERY_MAGIC = b"BOT_DISCOVER_V1"
 CONFIRM_TIMEOUT = 30          # seconds the phone has to answer "are you sure?"
 MAX_BAD_PINS = 5              # per IP, per 5 minutes
 
@@ -73,6 +80,29 @@ def too_many_bad_pins(ip: str) -> bool:
     _bad_pins[ip] = recent
     return len(recent) >= MAX_BAD_PINS
 
+
+# ---- auto-discovery: the phone broadcasts "BOT_DISCOVER_V1", we answer -----------
+
+class Discovery(asyncio.DatagramProtocol):
+    def __init__(self, port: int):
+        self.port = port
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data: bytes, addr):
+        if data.strip() != DISCOVERY_MAGIC:
+            return
+        reply = {"bot": "BOT", "v": 1, "name": socket.gethostname(), "port": self.port}
+        self.transport.sendto(json.dumps(reply).encode(), addr)
+        log.debug("Discovery request from %s", addr[0])
+
+    def error_received(self, exc):  # e.g. ICMP "port unreachable" on Windows; harmless
+        log.debug("Discovery socket error: %s", exc)
+
+
+# ---- WebSocket protocol ------------------------------------------------------------
 
 async def send(ws, **msg) -> None:
     await ws.send(json.dumps(msg, ensure_ascii=False))
@@ -126,10 +156,10 @@ def make_handler(cfg: dict):
             hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
         except (asyncio.TimeoutError, json.JSONDecodeError, websockets.ConnectionClosed, TypeError):
             return
+        if not isinstance(hello, dict):
+            return
         if too_many_bad_pins(ip):
             await send(ws, type="error", fatal=True, message="Too many wrong PINs. Wait 5 minutes.")
-            return
-        if not isinstance(hello, dict):
             return
         pin = str(hello.get("pin", ""))
         if hello.get("type") != "hello" or not hmac.compare_digest(pin, cfg["pin"]):
@@ -163,22 +193,62 @@ def make_handler(cfg: dict):
     return handler
 
 
-async def main() -> None:
+def show(text: str) -> None:
+    """Print to the console if there is one (there isn't when started in the background)."""
+    if sys.stdout is not None:
+        print(text, flush=True)
+
+
+async def main() -> int:
     cfg = load_config()
     port = int(cfg["port"])
-    async with websockets.serve(make_handler(cfg), "0.0.0.0", port, max_size=64 * 1024):
-        line = "=" * 46
-        print(f"\n{line}\n  BOT is running on {socket.gethostname()}")
-        print(f"  IP address : {local_ip()}\n  Port       : {port}\n  PIN        : {cfg['pin']}")
-        print(f"  Enter these in the BOT app on your phone.\n  Press Ctrl+C to stop.\n{line}\n", flush=True)
+    try:
+        server = await websockets.serve(make_handler(cfg), "0.0.0.0", port, max_size=64 * 1024)
+    except OSError:
+        log.error("Port %s is busy: BOT is probably already running in the background. "
+                  "Run 'python autostart.py stop' to stop it.", port)
+        return 1
+
+    loop = asyncio.get_running_loop()
+    transport = None
+    try:
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: Discovery(port), local_addr=("0.0.0.0", DISCOVERY_PORT))
+    except OSError as exc:
+        log.warning("Auto-discovery is off (%s). Enter the IP in the app manually.", exc)
+
+    PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
+    ip = local_ip()
+    log.info("BOT running on %s at %s:%s", socket.gethostname(), ip, port)
+    line = "=" * 46
+    show(f"\n{line}\n  BOT is running on {socket.gethostname()}")
+    show(f"  IP address : {ip}\n  Port       : {port}\n  PIN        : {cfg['pin']}")
+    show(f"  The app finds this PC automatically; just enter the PIN.\n  Press Ctrl+C to stop.\n{line}\n")
+    try:
         await asyncio.Future()
+    finally:
+        server.close()
+        if transport:
+            transport.close()
+        PID_PATH.unlink(missing_ok=True)
+    return 0
+
+
+def setup_logging() -> None:
+    handlers: list[logging.Handler] = [
+        RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=1, encoding="utf-8")]
+    if sys.stdout is not None:  # None when started with pythonw (background)
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        handlers.append(logging.StreamHandler(sys.stdout))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s",
+                        datefmt="%H:%M:%S", handlers=handlers)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
+    setup_logging()
     try:
-        asyncio.run(main())
+        sys.exit(asyncio.run(main()))
     except KeyboardInterrupt:
-        print("BOT stopped.")
+        show("BOT stopped.")

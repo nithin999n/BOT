@@ -20,14 +20,27 @@ start_bot.bat
 The window shows the **IP address**, **port** and **PIN**.
 The first time, Windows Firewall asks for permission. Tick **Private networks** and click **Allow**.
 
+### Start BOT automatically with Windows (optional)
+
+Double-click **`enable_autostart.bat`**. BOT then runs hidden in the background every time you log in.
+
+| | |
+|---|---|
+| See the PIN / check it's running | `python autostart.py status` |
+| Stop it | `python autostart.py stop` |
+| Turn autostart off | double-click `disable_autostart.bat` |
+| See what it heard and did | open `pc-agent/bot.log` |
+
 ## 2. Install the app on your phone
 
 1. On GitHub, open **Actions → Build Android APK**, open the latest run, and download **BOT-apk**.
    (Or push a tag like `v0.1.0`; the APK then shows up under **Releases**, which you can open directly on the phone.)
 2. Copy `BOT.apk` to your phone and open it. Allow "install unknown apps" when Android asks.
-3. Open BOT, enter the IP, port and PIN from the PC, and allow microphone access.
+3. Open BOT. It **finds your PC on Wi-Fi automatically**. Tap your PC, enter the PIN, and allow microphone access.
+   If your router later gives the PC a new IP, the app finds it again by itself.
 
-The phone and PC must be on the **same Wi-Fi**.
+The phone and PC must be on the **same Wi-Fi**. If auto-find doesn't work on your network,
+type the IP under "Manual address".
 
 ## 3. Talk to it
 
@@ -65,6 +78,6 @@ mobile-app/     Flutter app: lib/main.dart. The android/ folder is generated in 
 ## Roadmap
 
 - [x] Phase 1: fixed voice commands in 4 languages, PIN pairing, APK build
-- [ ] Phase 2: find the PC automatically on Wi-Fi (no typing the IP), QR pairing, start with Windows
+- [x] Phase 2: find the PC automatically on Wi-Fi, start with Windows, fixed signing key (APK updates install in place)
 - [ ] Phase 3: on-screen "ghost cursor" so you can watch BOT work; click buttons by name (UI Automation)
 - [ ] Phase 4: AI brain for free-form multi-step tasks

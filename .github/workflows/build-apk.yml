@@ -44,10 +44,26 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
+      # Same key every build => new APKs install as updates (no uninstall needed).
+      # The key lives in the repo secret ANDROID_DEBUG_KEYSTORE (base64), never in git.
+      - name: Use the fixed signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            keytool -list -keystore ~/.android/debug.keystore -storepass android | grep -i androiddebugkey
+          else
+            echo "::warning::Secret ANDROID_DEBUG_KEYSTORE is not set, so this APK is signed with a throwaway key."
+          fi
+
       - name: Build APK
         run: |
           flutter build apk --release
           cp build/app/outputs/flutter-apk/app-release.apk build/BOT.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs build/BOT.apk | grep -i "SHA-256" || true
 
       - uses: actions/upload-artifact@v4
         with:
