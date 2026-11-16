@@ -82,6 +82,24 @@ Moving the mouse into a screen corner stops any running mouse or keyboard action
 - **Phone ⇄ PC:** ⋮ → **Send files & clipboard**. Photos and files land in `Downloads\BOT`.
   The clipboard works both ways ("My clipboard → PC", "PC clipboard → me").
 
+## BOT on your PC desktop, controllers, health & safety
+
+- **Desktop BOT:** a little living BOT sits in the bottom-right corner of your PC.
+  - Its eyes follow your mouse. It yawns when you're idle, sleeps (zzz) after 5 minutes,
+    and gets excited when a task starts. The blue bubble flies out of it.
+  - It sweats 😅 when the CPU is busy, looks worried on low battery, and sparkles ⚡ while charging.
+  - It goes see-through when your mouse comes near, and clicks pass through it.
+  - Pet BOT on your phone and the desktop BOT reacts too 💕.
+  - Hide it from ⋮ → *BOT on PC desktop*, or say "hide the desktop bot".
+- **Control → Air mouse:** hold the pad and point your phone like a TV remote. Tap to click, and use ◀ ▶ for slides.
+- **Control → Gamepad:** a landscape joystick (WASD or arrows) plus Jump/E/F/Q/R/Shift/Ctrl/Esc/Tab/Enter.
+  Every key can be held, and the keys are sent as hardware key presses, so games notice them.
+- **PC health:** the chip under BOT shows CPU, RAM and battery. Tap it for gauges. BOT's face follows the PC's mood.
+- **Alerts:** "Battery low", "Download finished", and "Someone unlocked your PC while you were away".
+  Alerts that happen while the app is closed show up as **"While you were away…"** next time.
+- **Walk-away lock** (⋮ → *Walk-away lock*, off by default): when your phone leaves the Wi-Fi
+  for 1–10 minutes, BOT locks the PC. It never locks while someone is using the keyboard or mouse.
+
 ## Smart mode: click anything & chain steps (free, offline)
 
 BOT reads the words on your screen with Windows' built-in text reader (OCR), so you can click **anything that has a name**:

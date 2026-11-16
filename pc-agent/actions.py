@@ -381,6 +381,8 @@ ACTIONS = {
     "double_click": double_click,
     "right_click": right_click,
     "battery": battery,
+    "pet_off": lambda _m: (True, "Desktop BOT is hiding 🙈"),  # switches flipped in bot_agent
+    "pet_on": lambda _m: (True, "Desktop BOT is back! 👋"),
     "bubble_off": lambda _m: (True, "BOT cursor hidden"),   # the switch itself is flipped in bot_agent
     "bubble_on": lambda _m: (True, "BOT cursor is back"),
     "help": lambda _m: (True, HELP_TEXT),

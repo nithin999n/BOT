@@ -6,8 +6,11 @@ import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'air_mouse_page.dart';
 import 'connection.dart';
+import 'dashboard_page.dart';
 import 'face.dart';
+import 'gamepad_page.dart';
 import 'routines_page.dart';
 import 'safety_word.dart';
 import 'screen_page.dart';
@@ -113,6 +116,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     };
     _eventSub = conn.events.listen(_onEvent);
     style.addListener(_onChange);
+    conn.health.addListener(_onChange);
     loadStyle();
     try {
       _accelSub = userAccelerometerEventStream().listen(_onAccel, onError: (Object _) {});
@@ -136,6 +140,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     conn.removeListener(_onChange);
     voice.removeListener(_onChange);
     style.removeListener(_onChange);
+    conn.health.removeListener(_onChange);
     _accelSub?.cancel();
     _eventSub?.cancel();
     for (final t in [_flashTimer, _waitTimer, _holdTimer]) {
@@ -185,7 +190,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return switch (conn.link) {
       Link.offline => Mood.sleepy,
       Link.connecting => Mood.thinking,
-      Link.online => Mood.idle,
+      Link.online => moodForHealth(conn.health.value), // sweaty / worried / charging / idle
     };
   }
 
@@ -201,7 +206,107 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     HapticFeedback.selectionClick();
     final options = _tapMoods.where((m) => m != _flash).toList();
     setState(() => _poke++);
-    _flashMood(options[_rnd.nextInt(options.length)]);
+    final m = options[_rnd.nextInt(options.length)];
+    _flashMood(m);
+    // the little BOT on the PC desktop reacts too
+    conn.send({'type': 'pet_react', 'mood': m == Mood.love || m == Mood.shy ? 'love' : (m == Mood.surprised ? 'surprised' : 'happy')});
+  }
+
+  void _openControl() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.touch_app),
+            title: const Text('Touchpad'),
+            subtitle: const Text('Your phone screen is a laptop touchpad'),
+            onTap: () {
+              Navigator.pop(ctx);
+              _open(TouchpadPage(conn: conn));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.ads_click),
+            title: const Text('Air mouse'),
+            subtitle: const Text('Point your phone like a TV remote'),
+            onTap: () {
+              Navigator.pop(ctx);
+              _open(AirMousePage(conn: conn));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.sports_esports),
+            title: const Text('Gamepad'),
+            subtitle: const Text('Play PC games with your phone'),
+            onTap: () {
+              Navigator.pop(ctx);
+              _open(GamepadPage(conn: conn));
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _walkawaySettings() async {
+    var enabled = conn.walkaway['enabled'] == true;
+    var minutes = ((conn.walkaway['minutes'] as num?) ?? 1).toDouble();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          icon: const Icon(Icons.directions_walk),
+          title: const Text('Walk-away lock'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('When your phone leaves the Wi-Fi (you walk away), BOT locks your PC. '
+                'It never locks while someone is using the keyboard or mouse.'),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Turn on'),
+              value: enabled,
+              onChanged: (v) => setD(() => enabled = v),
+            ),
+            Text('Lock after ${minutes.round()} min away'),
+            Slider(value: minutes, min: 1, max: 10, divisions: 9, onChanged: (v) => setD(() => minutes = v)),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (ok == true) conn.send({'type': 'set_walkaway', 'enabled': enabled, 'minutes': minutes.round()});
+  }
+
+  void _showAlert(String title, String message) {
+    HapticFeedback.heavyImpact();
+    _flashMood(Mood.surprised, const Duration(seconds: 2));
+    _addLog('🔔 $title: $message', ok: !title.contains('unlocked'));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 6),
+      content: Text('$title\n$message'),
+    ));
+  }
+
+  Widget _healthChip() {
+    final h = conn.health.value;
+    if (h == null || !conn.online) return const SizedBox.shrink();
+    final battery = h['battery'];
+    final text = 'CPU ${h['cpu']}% · RAM ${h['ram']}%'
+        '${battery == null ? '' : ' · 🔋$battery%${h['charging'] == true ? '⚡' : ''}'}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: ActionChip(
+        avatar: const Icon(Icons.monitor_heart, size: 16),
+        label: Text(text, style: const TextStyle(fontSize: 12)),
+        visualDensity: VisualDensity.compact,
+        onPressed: () => _open(DashboardPage(conn: conn)),
+      ),
+    );
   }
 
   /// Shake the phone -> BOT gets dizzy.
@@ -331,6 +436,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _flashMood(Mood.sad);
       case 'log':
         _addLog(e.message, ok: e.ok);
+      case 'alert':
+        _showAlert(e.id, e.message);
+      case 'away':
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            icon: const Icon(Icons.notifications_active),
+            title: const Text('While you were away…'),
+            content: Text(e.message),
+            actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+          ),
+        );
     }
   }
 
@@ -475,6 +592,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (_petting) {
       setState(() => _petting = false);
       _flashMood(Mood.love, const Duration(milliseconds: 2200));
+      conn.send({'type': 'pet_react', 'mood': 'love'});
       _say(_rnd.nextBool() ? 'Hehe, that tickles! 💕' : 'Purrrr… I love you too 🥰');
       return;
     }
@@ -666,6 +784,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   setSafetyWord(context, conn);
                 case 'routines':
                   _open(RoutinesPage(conn: conn, lang: languages[_lang].code));
+                case 'pet':
+                  conn.petOn = !conn.petOn;
+                  conn.send({'type': 'set_pet', 'on': conn.petOn});
+                  setState(() {});
+                case 'walkaway':
+                  _walkawaySettings();
+                case 'health':
+                  _open(DashboardPage(conn: conn));
                 case 'transfer':
                   showTransfer(context, conn);
                 case 'style':
@@ -678,6 +804,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'routines', child: Text('Routines')),
+              const PopupMenuItem(value: 'health', child: Text('PC health')),
+              CheckedPopupMenuItem(
+                value: 'pet',
+                checked: conn.petOn,
+                enabled: conn.online,
+                child: const Text('BOT on PC desktop'),
+              ),
+              PopupMenuItem(
+                value: 'walkaway',
+                enabled: conn.online,
+                child: Text('Walk-away lock${conn.walkaway['enabled'] == true ? ' (on)' : ''}'),
+              ),
               const PopupMenuItem(value: 'transfer', child: Text('Send files & clipboard')),
               const PopupMenuItem(value: 'style', child: Text('Name & colour')),
               CheckedPopupMenuItem(
@@ -700,7 +838,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       body: LayoutBuilder(builder: (context, box) {
         // While the keyboard is open, hide the face so the text box has room.
         final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
-        final faceSize = math.min(math.min(box.maxWidth * 0.6, box.maxHeight * 0.32), 250.0);
+        final faceSize = math.min(math.min(box.maxWidth * 0.58, box.maxHeight * 0.29), 240.0);
         return Column(
           children: [
             Padding(
@@ -721,6 +859,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             if (!keyboardOpen) ...[
               _face(faceSize),
               _captionBubble(),
+              _healthChip(),
               const SizedBox(height: 8),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -732,7 +871,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         onCommand: _sendCommand,
                       ))),
                   const SizedBox(width: 8),
-                  _actionButton(Icons.touch_app, 'Touchpad', () => _open(TouchpadPage(conn: conn))),
+                  _actionButton(Icons.sports_esports, 'Control', _openControl),
                   const SizedBox(width: 8),
                   _actionButton(Icons.lock, 'Lock PC', _lockPc),
                 ]),

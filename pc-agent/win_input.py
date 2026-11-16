@@ -70,3 +70,45 @@ def hscroll(notches: int) -> None:
 
 def esc_pressed() -> bool:
     return bool(user32.GetAsyncKeyState(0x1B) & 0x8000)
+
+
+# ---- game keys: hardware scan codes, which games notice (unlike plain virtual keys) -----------
+class _KI(ctypes.Structure):
+    _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD), ("dwFlags", wt.DWORD), ("time", wt.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _MI(ctypes.Structure):
+    _fields_ = [("dx", wt.LONG), ("dy", wt.LONG), ("mouseData", wt.DWORD), ("dwFlags", wt.DWORD),
+                ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _U(ctypes.Union):
+    _fields_ = [("mi", _MI), ("ki", _KI)]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", wt.DWORD), ("u", _U)]
+
+
+GAME_KEYS = {  # name -> (scan code, extended key?)
+    "w": (0x11, False), "a": (0x1E, False), "s": (0x1F, False), "d": (0x20, False),
+    "up": (0x48, True), "down": (0x50, True), "left": (0x4B, True), "right": (0x4D, True),
+    "space": (0x39, False), "enter": (0x1C, False), "esc": (0x01, False), "tab": (0x0F, False),
+    "shift": (0x2A, False), "ctrl": (0x1D, False), "alt": (0x38, False),
+    "e": (0x12, False), "f": (0x21, False), "q": (0x10, False), "r": (0x13, False), "c": (0x2E, False),
+    "x": (0x2D, False), "z": (0x2C, False), "j": (0x24, False), "k": (0x25, False), "l": (0x26, False),
+    "m": (0x32, False), "1": (0x02, False), "2": (0x03, False), "3": (0x04, False), "4": (0x05, False),
+}
+user32.SendInput.argtypes = [wt.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
+
+
+def game_key(name: str, down: bool) -> bool:
+    spec = GAME_KEYS.get(name)
+    if not spec:
+        return False
+    scan, extended = spec
+    flags = 0x0008 | (0 if down else 0x0002) | (0x0001 if extended else 0)  # SCANCODE | KEYUP | EXTENDED
+    inp = _INPUT(type=1, u=_U(ki=_KI(wVk=0, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=0)))
+    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+    return True

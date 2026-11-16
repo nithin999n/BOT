@@ -12,7 +12,10 @@ const _screenColor = Color(0xFF060B1E);
 
 Color _a(Color c, double opacity) => c.withAlpha((opacity.clamp(0.0, 1.0) * 255).round());
 
-enum Mood { idle, listening, thinking, happy, sad, confused, sleepy, surprised, wink, love, shy, excited, dizzy, purr }
+enum Mood {
+  idle, listening, thinking, happy, sad, confused, sleepy, surprised, wink, love, shy, excited, dizzy, purr,
+  sweaty, worried, charging, // feelings that follow the PC's health
+}
 
 /// Target shape of the face for each mood; the face eases smoothly between them.
 class _Shape {
@@ -50,6 +53,9 @@ const _shapes = <Mood, _Shape>{
   Mood.shy: _Shape(openL: 0.6, openR: 0.6, smile: 0.3, blush: 1, shy: 1, glow: 0.6, tilt: 0.08),
   Mood.excited: _Shape(star: 1, smile: 1, mouthOpen: 0.6, blush: 0.8, glow: 1, scale: 1.05),
   Mood.purr: _Shape(arc: 1, smile: 0.8, cat: 1, blush: 1, glow: 0.9, tilt: 0.07), // being petted
+  Mood.sweaty: _Shape(openL: 0.7, openR: 0.7, smile: 0.15, glow: 0.75, tilt: -0.04), // CPU is busy
+  Mood.worried: _Shape(openL: 0.9, openR: 0.9, sad: 0.7, smile: -0.35, glow: 0.4), // battery low
+  Mood.charging: _Shape(cat: 1, smile: 0.6, blush: 0.5, glow: 0.8), // plugged in
   Mood.dizzy: _Shape(spiral: 1, smile: -0.1, mouthOpen: 0.12, glow: 0.45, tilt: 0.05),
 };
 
@@ -306,6 +312,7 @@ class _RobotFaceState extends State<RobotFace> with SingleTickerProviderStateMix
       if (mood == Mood.sleepy) _burst('z', 1, speed: 0.12, size: 0.07);
       if (mood == Mood.love) _burst('heart', 1, speed: 0.2, size: 0.05);
       if (mood == Mood.excited) _burst('sparkle', 1, speed: 0.2, size: 0.05);
+      if (mood == Mood.charging && _rnd.nextDouble() < 0.5) _burst('bolt', 1, speed: 0.18, size: 0.06);
     }
     if (mood == Mood.purr && _t > _nextPurrHeart) {
       _nextPurrHeart = _t + 0.45;
@@ -472,6 +479,19 @@ class _FacePainter extends CustomPainter {
       canvas.drawRect(Rect.fromLTWH(screen.left, y, sw, sh * 0.014), scan);
     }
     canvas.restore(); // screen clip
+
+    if (s.mood == Mood.sweaty) {
+      // a sweat drop sliding down the side of the head
+      final p = (s.t % 1.6) / 1.6;
+      final d = Offset(headRect.right - w * 0.06, headRect.top + h * (0.1 + 0.25 * p));
+      final r = w * 0.03;
+      final drop = Path()
+        ..moveTo(d.dx, d.dy - r * 2)
+        ..quadraticBezierTo(d.dx + r * 1.1, d.dy - r * 0.2, d.dx, d.dy + r)
+        ..quadraticBezierTo(d.dx - r * 1.1, d.dy - r * 0.2, d.dx, d.dy - r * 2)
+        ..close();
+      canvas.drawPath(drop, Paint()..color = _a(const Color(0xFF8CD2FF), 0.9 * (1 - p * 0.6)));
+    }
 
     _particles(canvas, w);
     canvas.restore();
@@ -732,6 +752,16 @@ class _FacePainter extends CustomPainter {
           canvas.restore();
         case 'sparkle':
           canvas.drawPath(_sparklePath(pos, sz), Paint()..color = _a(botLight, fade));
+        case 'bolt':
+          final b = Path()
+            ..moveTo(pos.dx + sz * 0.2, pos.dy - sz)
+            ..lineTo(pos.dx - sz * 0.5, pos.dy + sz * 0.1)
+            ..lineTo(pos.dx, pos.dy + sz * 0.1)
+            ..lineTo(pos.dx - sz * 0.25, pos.dy + sz)
+            ..lineTo(pos.dx + sz * 0.55, pos.dy - sz * 0.2)
+            ..lineTo(pos.dx + sz * 0.05, pos.dy - sz * 0.2)
+            ..close();
+          canvas.drawPath(b, Paint()..color = _a(const Color(0xFFFFE27A), fade));
         default:
           final text = {'q': '?', 'ex': '!', 'z': 'z', 'note': '♪'}[p.kind] ?? '';
           final tp = TextPainter(

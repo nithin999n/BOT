@@ -35,8 +35,10 @@ import ai_agent
 import matcher
 import pyperclip
 
+import health
 import router
 import routines
+from desktop_pet import PET
 import screen
 import security
 import smart
@@ -71,7 +73,8 @@ def load_config() -> dict:
     if not cfg.get("port"):
         cfg["port"] = DEFAULT_PORT
         changed = True
-    for key, default in (("bubble_cursor", True), ("keep_awake_when_charging", True)):
+    for key, default in (("bubble_cursor", True), ("keep_awake_when_charging", True), ("desktop_pet", True),
+                         ("walkaway", {"enabled": False, "minutes": 1})):
         if key not in cfg:
             cfg[key] = default
             changed = True
@@ -113,6 +116,14 @@ def save_config() -> None:
     CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
 
 
+def set_pet(on: bool) -> None:
+    """Show/hide the little BOT on the PC desktop and remember it."""
+    PET.set_wanted(on)
+    if CFG.get("desktop_pet") != on:
+        CFG["desktop_pet"] = on
+        save_config()
+
+
 def set_bubble(on: bool) -> None:
     """Switch BOT's bubble cursor on/off and remember it."""
     BUBBLE.set_wanted(on)
@@ -151,6 +162,74 @@ def apply_style() -> None:
     color = str(CFG.get("style", {}).get("color", ""))
     if re.fullmatch(r"#?[0-9a-fA-F]{6}", color):
         BUBBLE.set_color(color)
+        PET.set_color(color)
+
+
+SESSIONS: set = set()           # connected phones
+ALERTS: list[dict] = []         # alerts waiting for a phone to connect
+_presence = {"last_lan_ip": "", "last_seen": 0.0, "armed": False, "next_ping": 0.0}
+
+
+def phone_nearby() -> bool:
+    """Is your phone on the same Wi-Fi right now? (connected, or answering pings)"""
+    if any(s.lan for s in SESSIONS):
+        _presence["last_seen"] = time.time()
+        return True
+    return time.time() - _presence["last_seen"] < 90
+
+
+async def broadcast(**msg) -> None:
+    for s in list(SESSIONS):
+        await _send_quietly(s.ws, **msg)
+
+
+async def push_alert(alert: dict) -> None:
+    log.info("Alert: %s - %s", alert["title"], alert["message"])
+    if SESSIONS:
+        await broadcast(type="alert", **alert)
+    else:
+        ALERTS.append(alert)  # delivered as "While you were away…" next time
+        del ALERTS[:-20]
+
+
+async def watch_forever() -> None:
+    """Every 2 s: health -> phones + desktop BOT; alerts; walk-away lock."""
+    watcher = await asyncio.to_thread(health.Watcher)
+    tick = 0
+    while True:
+        try:
+            h = await asyncio.to_thread(health.snapshot)
+            PET.health = h
+            if SESSIONS:
+                await broadcast(type="health", **h)
+            # presence: ping the phone now and then when it isn't connected over Wi-Fi
+            ip = _presence["last_lan_ip"]
+            if ip and not any(s.lan for s in SESSIONS) and time.time() > _presence["next_ping"]:
+                _presence["next_ping"] = time.time() + 20
+                if await asyncio.to_thread(health.ping, ip):
+                    _presence["last_seen"] = time.time()
+            nearby = phone_nearby()
+            if nearby:
+                _presence["armed"] = True
+            if tick % 2 == 0:
+                for alert in await asyncio.to_thread(watcher.check, h, nearby):
+                    await push_alert(alert)
+            # walk-away lock: phone gone for N minutes, nobody using the PC, not already locked
+            wa = CFG.get("walkaway", {})
+            if wa.get("enabled") and _presence["armed"] and not nearby:
+                away = time.time() - _presence["last_seen"]
+                if away >= max(30, int(wa.get("minutes", 1)) * 60) and health.idle_seconds() >= 60 \
+                        and not await asyncio.to_thread(health.is_locked):
+                    health.lock()
+                    _presence["armed"] = False
+                    log.info("Walk-away lock: phone left, PC locked")
+                    await push_alert({"kind": "walkaway", "title": "PC locked 🔒",
+                                      "message": "You walked away, so I locked your PC.",
+                                      "time": datetime.now().strftime("%H:%M")})
+        except Exception:
+            log.exception("watcher tick failed")
+        tick += 1
+        await asyncio.sleep(2)
 
 
 def safe_filename(name: str) -> str:
@@ -242,6 +321,12 @@ class Session:
         self.buttons_down: set[str] = set()
         self.bad_old_words = 0
         self.uploads: dict[str, dict] = {}  # files being sent from the phone
+        self.keys_down: set[str] = set()     # gamepad keys being held
+        ip = ws.remote_address[0] if ws.remote_address else ""
+        # On the home Wi-Fi (not Tailscale 100.x, not this PC itself)?
+        self.lan = bool(ip) and not ip.startswith(("100.", "127.")) and ip != "::1"
+        if self.lan:
+            _presence["last_lan_ip"], _presence["last_seen"] = ip, time.time()
 
     def close(self) -> None:
         self.cursor_hz = 0
@@ -264,6 +349,11 @@ class Session:
         for name in self.buttons_down:  # never leave a mouse button stuck down
             win_input.button(name, False)
         self.buttons_down.clear()
+        for key in self.keys_down:  # ...or a game key
+            win_input.game_key(key, False)
+        self.keys_down.clear()
+        if self.lan:
+            _presence["last_seen"] = time.time()  # the walk-away timer starts now
 
 
 async def send(ws, **msg) -> None:
@@ -346,7 +436,11 @@ async def run_match(ws, m: matcher.Match, heard: str) -> None:
     if m.intent in ("bubble_on", "bubble_off"):
         set_bubble(m.intent == "bubble_on")
         await send(ws, type="bubble", on=BUBBLE.wanted)
+    if m.intent in ("pet_on", "pet_off"):
+        set_pet(m.intent == "pet_on")
+        await send(ws, type="pet", on=PET.wanted)
     ok, message = await asyncio.to_thread(actions.execute, m)
+    PET.react("happy" if ok else "sad", 1.5)
     log.info("  -> %s: %s", "ok" if ok else "FAILED", message)
     await send(ws, type="result", ok=ok, message=message, heard=heard)
 
@@ -614,6 +708,29 @@ async def dispatch(sess: Session, msg: dict) -> None:
         await send(sess.ws, type="clip", text=(text or "")[:200_000])
     elif kind in ("file_begin", "file_chunk", "file_end"):
         await handle_file(sess, kind, msg)
+    elif kind == "key_state":  # gamepad: hold / release a key
+        key = str(msg.get("key", ""))
+        down = bool(msg.get("down"))
+        if win_input.game_key(key, down):
+            (sess.keys_down.add if down else sess.keys_down.discard)(key)
+    elif kind == "set_pet":
+        set_pet(bool(msg.get("on")))
+        await send(sess.ws, type="pet", on=PET.wanted)
+    elif kind == "pet_react":  # petting / tapping BOT on the phone makes the desktop BOT react too
+        mood = str(msg.get("mood", "happy"))
+        if mood in ("happy", "love", "excited", "surprised", "sad"):
+            PET.react(mood, 2.0)
+    elif kind == "set_walkaway":
+        CFG["walkaway"] = {"enabled": bool(msg.get("enabled")),
+                           "minutes": int(_num(msg.get("minutes"), 1, 1, 30))}
+        save_config()
+        if CFG["walkaway"]["enabled"]:
+            _presence["armed"] = sess.lan
+        await send(sess.ws, type="walkaway", **CFG["walkaway"])
+        await send(sess.ws, type="result", ok=True,
+                   message=("Walk-away lock is ON: I'll lock the PC "
+                            f"{CFG['walkaway']['minutes']} min after your phone leaves the Wi-Fi."
+                            if CFG["walkaway"]["enabled"] else "Walk-away lock is off."))
     elif kind == "set_keyword":
         if sess.bad_old_words >= 5:
             await send(sess.ws, type="keyword_status", ok=False, set=security.is_set(CFG),
@@ -725,9 +842,14 @@ def make_handler(cfg: dict):
                    bubble=BUBBLE.wanted, ai=AGENT.available, busy=AGENT.busy or smart.RUNNER.busy,
                    keyword_set=security.is_set(CFG), mac=_net["mac"], broadcast=_net["broadcast"],
                    routines=routines.get(CFG), style=CFG.get("style", {}),
+                   pet=PET.wanted, walkaway=CFG.get("walkaway", {}), health=PET.health,
+                   away_alerts=list(ALERTS),
                    features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword",
-                             "routines", "files", "clipboard", "style"])
+                             "routines", "files", "clipboard", "style", "health", "alerts", "gamepad", "pet"])
+        ALERTS.clear()
         sess = Session(ws)
+        SESSIONS.add(sess)
+        PET.react("happy", 2.0)
         try:
             async for raw in ws:
                 if not isinstance(raw, str):
@@ -746,6 +868,7 @@ def make_handler(cfg: dict):
         except websockets.ConnectionClosed:
             pass
         finally:
+            SESSIONS.discard(sess)
             sess.close()
             log.info("Phone disconnected (%s)", ip)
 
@@ -780,8 +903,11 @@ async def main() -> int:
 
     BUBBLE.wanted = bool(cfg.get("bubble_cursor", True))
     BUBBLE.start()
+    PET.wanted = bool(cfg.get("desktop_pet", True))
+    PET.busy_fn = lambda: AGENT.busy or smart.RUNNER.busy
+    PET.start()
     apply_style()
-    jobs = [asyncio.create_task(refresh_tailscale_forever())]
+    jobs = [asyncio.create_task(refresh_tailscale_forever()), asyncio.create_task(watch_forever())]
     if cfg.get("keep_awake_when_charging", True):
         jobs.append(asyncio.create_task(keep_awake_forever()))
 

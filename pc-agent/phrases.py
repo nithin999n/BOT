@@ -218,6 +218,8 @@ TAB = ["tab", "tabs", "टैब", "ಟ್ಯಾಬ್", "ట్యాబ్"]
 CHANGE = ["change", "बदल", "ಬದಲಿಸ", "ಬದಲಾಯಿಸ", "మార్చ"]
 CURSOR = ["cursor", "bubble", "pointer", "कर्सर", "बबल", "पॉइंटर", "ಕರ್ಸರ್", "ಬಬಲ್", "ಪಾಯಿಂಟರ್",
           "కర్సర్", "బబుల్", "పాయింటర్"]
+PET = ["desktop bot", "desktop pet", "pc bot", "little bot", "डेस्कटॉप बॉट", "डेस्कटॉप वाला बॉट",
+       "ಡೆಸ್ಕ್‌ಟಾಪ್ ಬಾಟ್", "డెస్క్‌టాప్ బాట్"]
 HIDE = ["hide", "disable", "remove", "छुपा", "छिपा", "हटा", "ಮರೆಮಾಡ", "ತೆಗೆ", "దాచ", "తీసే"]
 ON = ["on", "ऑन", "चालू", "ಆನ್", "ఆన్"]
 SHOW = ["show", "enable", "bring back", "दिखा", "वापस", "ತೋರಿಸ", "ವಾಪಸ್", "చూపించ", "చూపు"]
@@ -280,6 +282,9 @@ SIMPLE = [
     {"intent": "double_click", "rules": [[["double click", "डबल क्लिक", "ಡಬಲ್ ಕ್ಲಿಕ್", "డబుల్ క్లిక్"]]]},
     {"intent": "right_click", "rules": [[["right click", "राइट क्लिक", "ರೈಟ್ ಕ್ಲಿಕ್", "రైట్ క్లిక్"]]]},
     {"intent": "click", "rules": [[["click", "क्लिक", "ಕ್ಲಿಕ್", "క్లిక్"]]]},
+    # The little BOT living on the PC desktop: hide / show it.
+    {"intent": "pet_off", "priority": 3, "rules": [[PET, OFF + HIDE]]},
+    {"intent": "pet_on", "priority": 3, "rules": [[PET, ON + SHOW]]},
     # Turn BOT's blue bubble cursor off / on. priority beats "show desktop", "close window" etc.
     {"intent": "bubble_off", "priority": 2, "rules": [[CURSOR, OFF + HIDE]]},
     {"intent": "bubble_on", "priority": 2, "rules": [[CURSOR, ON + SHOW]]},

@@ -180,6 +180,7 @@ class Overlay:
         self.enabled = False        # the window works
         self.wanted = True          # the user wants to see it (can be switched off from the phone)
         self._cancelled = False
+        self.origin = None          # callable -> (x, y) or None: where the bubble appears (the desktop BOT)
         self._q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._hwnd = None
@@ -321,13 +322,13 @@ class Overlay:
         if kind == "pop":
             _, text, ok, hold = cmd
             if self._alpha <= 1:
-                self._pos = tuple(map(float, win_input.cursor_pos()))
+                self._pos = self._start_point()
             self._set_image(text, ok)
             self._alpha_target, self._hide_at = 255.0, now + hold
         elif kind == "glide":
             _, x, y, text, done = cmd
-            if self._alpha <= 1:  # appear where the real mouse is, then glide from there
-                self._pos = tuple(map(float, win_input.cursor_pos()))
+            if self._alpha <= 1:  # appear at the desktop BOT (or the mouse), then glide from there
+                self._pos = self._start_point()
             self._set_image(text, True)
             dist = math.hypot(x - self._pos[0], y - self._pos[1])
             dur = min(0.5, 0.12 + dist / 2500)
@@ -351,6 +352,13 @@ class Overlay:
                 self._glide[4].set()
                 self._glide = None
             self._alpha_target, self._hide_at = 0.0, None
+
+    def _start_point(self) -> tuple[float, float]:
+        try:
+            p = self.origin() if self.origin else None
+        except Exception:
+            p = None
+        return tuple(map(float, p)) if p else tuple(map(float, win_input.cursor_pos()))
 
     def _user_took_over(self) -> bool:
         """You moved the real mouse, or pressed Esc, while the bubble was on its way."""
