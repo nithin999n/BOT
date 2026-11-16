@@ -163,17 +163,30 @@ def parse_click(part: str):
     return ClickStep(names=names, said=target, kind=kind, hint=hint)
 
 
+# When you say "click/select/go to <something>", a built-in command only wins if it's one of these
+# harmless ones ("select all", "go to desktop", "click new tab"...). Never restart/shutdown/lock etc.
+BUILTIN_BEATS_CLICK = {
+    "select_all", "enter", "scroll_up", "scroll_down", "show_desktop", "new_tab", "close_tab", "copy",
+    "paste", "undo", "refresh", "go_back", "open_app", "open_site", "open_url", "type_text",
+    "google_search", "youtube_search", "bubble_on", "bubble_off",
+}
+
+
 def parse_step(part: str):
     part = part.strip(" ,.")
     if not part:
         return None
     m = matcher.match(part)
+    c = parse_click(part)
+    if isinstance(c, ClickStep):
+        if c.said in matcher.PRONOUNS:  # "click that" / "click here" = click where the mouse is
+            return Match({"double": "double_click", "right": "right_click"}.get(c.kind, "click"))
+        if m is None or m.intent not in BUILTIN_BEATS_CLICK:
+            return c
+        return m
     if m is not None and m.intent not in POINTER_INTENTS:
         return m
-    c = parse_click(part)
-    if c is not None:
-        return c
-    return m
+    return c or m
 
 
 def split_steps(text: str) -> list[str]:

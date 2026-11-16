@@ -80,6 +80,14 @@ BOT reads the words on your screen with Windows' built-in text reader (OCR), so 
 | "double click Recycle Bin" · "right click Downloads" | double / right click |
 | "open chrome **and** go to gmail **and** click compose" | runs the steps one after another (also *then*, और, फिर, ಮತ್ತು, ನಂತರ, మరియు …) |
 
+| "in the text box say hello" · "type here hello" · "reply saying I'll call later" | types the text into the box you're in |
+| "come down a little" · "go up a lot" · "नीचे जाओ" | scrolls a little / normal / a lot |
+| "send it" · "delete it" · "delete it permanently" | presses Enter / Delete / Shift+Delete, **after your safety word** |
+| "close notepad" · "close all notepads" | closes one window / every window of that app |
+| "click that" · "open it" | clicks where the mouse is / opens the selected item |
+
+When you say **click / select / go to / navigate to** something, BOT always clicks it on screen.
+It never turns that into a built-in command like restart or shutdown.
 If the word isn't on screen yet (a page still loading), BOT keeps looking for up to 8 seconds.
 Icons without text can't be clicked by name. Use the **Screen** page and tap them instead.
 

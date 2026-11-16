@@ -26,6 +26,7 @@ class _TouchpadPageState extends State<TouchpadPage> {
   double _scrollAcc = 0;
   Timer? _flushTimer;
   double _speed = 1.6;
+  bool _showKeys = false; // landscape: keyboard only when asked for
 
   BotConnection get conn => widget.conn;
 
@@ -110,8 +111,21 @@ class _TouchpadPageState extends State<TouchpadPage> {
 
   @override
   Widget build(BuildContext context) {
+    final landscape = MediaQuery.of(context).orientation == Orientation.landscape;
     return Scaffold(
-      appBar: AppBar(title: const Text('Touchpad')),
+      appBar: AppBar(
+        title: const Text('Touchpad'),
+        toolbarHeight: landscape ? 44 : null,
+        actions: [
+          if (landscape)
+            IconButton(
+              tooltip: 'Keyboard',
+              isSelected: _showKeys,
+              icon: const Icon(Icons.keyboard),
+              onPressed: () => setState(() => _showKeys = !_showKeys),
+            ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -145,22 +159,23 @@ class _TouchpadPageState extends State<TouchpadPage> {
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(children: [_button('Left', 'left'), _button('Right', 'right')]),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(children: [
-              const Icon(Icons.speed, size: 20),
-              Expanded(
-                child: Slider(
-                  value: _speed,
-                  min: 0.6,
-                  max: 3.5,
-                  label: 'Speed',
-                  onChanged: (v) => setState(() => _speed = v),
+          if (!landscape)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(children: [
+                const Icon(Icons.speed, size: 20),
+                Expanded(
+                  child: Slider(
+                    value: _speed,
+                    min: 0.6,
+                    max: 3.5,
+                    label: 'Speed',
+                    onChanged: (v) => setState(() => _speed = v),
+                  ),
                 ),
-              ),
-            ]),
-          ),
-          KeyBar(conn: conn),
+              ]),
+            ),
+          if (!landscape || _showKeys) KeyBar(conn: conn),
         ],
       ),
     );

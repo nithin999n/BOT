@@ -61,6 +61,55 @@ class PlanTest(unittest.TestCase):
                 self.assertTrue(p.is_single_builtin)
                 self.assertEqual(p.steps[0].intent, intent)
 
+    def test_from_real_log(self):
+        """Commands that confused BOT before (from bot.log)."""
+        cases = [
+            ("navigate to restart to update", "ClickStep", "restart to update"),   # NOT restart the PC!
+            ("in the chat text box say is it done?", "type_text", "is it done?"),
+            ("in the textbox say you didn't", "type_text", "you didn't"),
+            ("give a prompt saying is it done", "type_text", "is it done"),
+            ("continue the prompt saying now everything is working", "type_text", "now everything is working"),
+            ("type here is it done?", "type_text", "is it done?"),
+            ("open a new tab in notepad", "new_tab", None),
+            ("close one more notepad", "close_app", ""),
+            ("close all notepads", "close_app", "all"),
+            ("send it", "send_enter", None),
+            ("delete it", "delete_key", None),
+            ("delete it permanently", "delete_key", "permanent"),
+            ("click that", "click", None),
+            ("double click here", "double_click", None),
+            ("open it", "enter", None),
+            ("come down a little", "scroll_down", "little"),
+            ("go up a lot", "scroll_up", "lot"),
+            ("नीचे जाओ", "scroll_down", None),
+            ("select all", "select_all", None),
+            ("go to desktop", "show_desktop", None),
+            ("डिलीट करो", "delete_key", None),
+            ("भेज दो", "send_enter", None),
+        ]
+        for text, want, detail in cases:
+            with self.subTest(text=text):
+                p = smart.plan(text)
+                self.assertIsNotNone(p)
+                step = p.steps[0]
+                if want == "ClickStep":
+                    self.assertIsInstance(step, smart.ClickStep)
+                    self.assertEqual(step.said, detail)
+                else:
+                    self.assertIsInstance(step, Match)
+                    self.assertEqual(step.intent, want)
+                    if detail is not None:
+                        self.assertEqual(step.arg, detail)
+
+    def test_chain_from_log(self):
+        p = smart.plan("come down a little and select open 5.5 model")
+        self.assertEqual(kinds(p), ["Match:scroll_down", "ClickStep:"])
+        p = smart.plan("type hello and send it")
+        self.assertEqual(kinds(p), ["Match:type_text", "Match:send_enter"])
+        # "send a mail to rahul" is NOT "press Enter"
+        m = smart.plan("send a mail to rahul about tomorrow's meeting")
+        self.assertTrue(m is None or not any(isinstance(s, Match) and s.intent == "send_enter" for s in m.steps))
+
     def test_nonsense(self):
         self.assertIsNone(smart.plan("blah blah"))
         self.assertIsNone(smart.plan("open chrome and blah blah"))

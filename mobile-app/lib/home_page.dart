@@ -34,6 +34,11 @@ const examples = <String, List<String>>{
     'click Sign in',
     'double click Recycle Bin',
     'open youtube and search lofi songs',
+    'come down a little and select Settings',
+    'in the text box say hello there',
+    'type hello and send it',
+    'delete it',
+    'close all notepads',
     'जीमेल पर क्लिक करो',
     'Gmail ಮೇಲೆ ಕ್ಲಿಕ್ ಮಾಡು',
     'Gmail పై క్లిక్ చేయి',
@@ -44,7 +49,7 @@ const examples = <String, List<String>>{
   'తెలుగు': ['క్రోమ్ ఓపెన్ చేయి', 'సౌండ్ పెంచు', 'గూగుల్ లో వాతావరణం వెతుకు', 'లాక్ చేయి', 'కర్సర్ ఆఫ్ చేయి'],
 };
 
-const _tapMoods = [Mood.happy, Mood.wink, Mood.love, Mood.surprised, Mood.confused];
+const _tapMoods = [Mood.happy, Mood.wink, Mood.love, Mood.shy, Mood.excited, Mood.surprised];
 
 class LogEntry {
   LogEntry(this.text, {this.mine = false, this.ok = true});
@@ -76,6 +81,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String _bubbleText = '';
   String _progress = '';
   bool _askedForKeyword = false;
+  int _poke = 0; // tap = squish
   final _rnd = math.Random();
 
   int _lang = 0;
@@ -173,7 +179,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _tapFace() {
     HapticFeedback.selectionClick();
     final options = _tapMoods.where((m) => m != _flash).toList();
+    setState(() => _poke++);
     _flashMood(options[_rnd.nextInt(options.length)]);
+  }
+
+  void _lockPc() {
+    HapticFeedback.mediumImpact();
+    if (!conn.online) {
+      _say('Not connected to the PC');
+      _flashMood(Mood.sleepy);
+      return;
+    }
+    conn.send({'type': 'quick', 'action': 'lock'});
+    _addLog('🔒 Lock PC', mine: true);
+    _flashMood(Mood.wink);
   }
 
   String get _caption {
@@ -213,7 +232,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _stopWaiting();
         _addLog(e.message, ok: e.ok);
         _say(e.message);
-        _flashMood(e.ok ? Mood.happy : Mood.sad, const Duration(seconds: 2));
+        final mood = e.ok
+            ? (_rnd.nextBool() ? Mood.happy : Mood.excited)
+            : (e.message.contains("couldn't find") ? Mood.confused : (_rnd.nextBool() ? Mood.sad : Mood.dizzy));
+        _flashMood(mood, const Duration(seconds: 2));
         HapticFeedback.lightImpact();
       case 'confirm':
         _flashMood(Mood.surprised, const Duration(seconds: 3));
@@ -446,6 +468,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           lookStamp: c?.at,
           level: voice.listening ? voice.level : 0,
           size: size,
+          poke: _poke,
         ),
       ),
     );
@@ -485,6 +508,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
         ),
     ]);
+  }
+
+  Widget _actionButton(IconData icon, String label, VoidCallback onTap) {
+    return Expanded(
+      child: FilledButton.tonal(
+        onPressed: onTap,
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 22),
+          const SizedBox(height: 3),
+          Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+        ]),
+      ),
+    );
   }
 
   void _open(Widget page) {
@@ -558,26 +598,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Row(children: [
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: () => _open(ScreenPage(
+                  _actionButton(Icons.desktop_windows, 'Screen', () => _open(ScreenPage(
                         conn: conn,
                         voice: voice,
                         locale: _locale,
                         onCommand: _sendCommand,
-                      )),
-                      icon: const Icon(Icons.desktop_windows),
-                      label: const Text('Screen'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: () => _open(TouchpadPage(conn: conn)),
-                      icon: const Icon(Icons.touch_app),
-                      label: const Text('Touchpad'),
-                    ),
-                  ),
+                      ))),
+                  const SizedBox(width: 8),
+                  _actionButton(Icons.touch_app, 'Touchpad', () => _open(TouchpadPage(conn: conn))),
+                  const SizedBox(width: 8),
+                  _actionButton(Icons.lock, 'Lock PC', _lockPc),
                 ]),
               ),
             ],

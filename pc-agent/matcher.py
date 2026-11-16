@@ -87,7 +87,22 @@ SIMPLE = [
 ]
 CONFIRM_INTENTS = {s["intent"] for s in SIMPLE if s["confirm"]}
 
-_TYPE_EN = re.compile(r"^\s*(?:please\s+)?(?:type|write)\s+(.+)$", re.I | re.S)
+# Ways people ask BOT to type something (English). First match wins; group 1 is the text.
+_TYPE_EN = [
+    # "type here is it done" / "write hello" / "say hello" / "enter my name"
+    re.compile(r"^\s*(?:please\s+)?(?:type|write|enter|say)\s+(?:(?:here|there|this|it)\s*[:,]?\s+)?(.+)$", re.I | re.S),
+    # "in the chat text box say is it done" / "in the search bar type cats"
+    re.compile(r"^\s*(?:please\s+)?(?:in|into|on)\s+(?:the\s+)?(?:\w+\s+){0,2}(?:box|textbox|field|bar|area)"
+               r"\s*,?\s*(?:say|type|write|enter|put)?\s+(.+)$", re.I | re.S),
+    # "give a prompt saying is it done" / "reply to ram saying ok" / "a message that says hi"
+    re.compile(r"\b(?:saying|that says|which says)\s+(.+)$", re.I | re.S),
+]
+NEW_TAB = _norm_all(["new tab", "नया टैब", "न्यू टैब", "ಹೊಸ ಟ್ಯಾಬ್", "ನ್ಯೂ ಟ್ಯಾಬ್", "కొత్త ట్యాబ్", "న్యూ ట్యాబ్"])
+ALL_WORDS = _norm_all(["all", "every", "everything", "सब", "सारे", "सभी", "ಎಲ್ಲಾ", "ಎಲ್ಲ", "అన్ని", "అన్నీ"])
+PRONOUNS = set(_norm_all(["it", "this", "that", "here", "there", "इसे", "उसे", "यह", "वह", "ಇದನ್ನು", "ಅದನ್ನು",
+                          "ಇದು", "ಅದು", "దీన్ని", "దాన్ని", "ఇది", "అది"]))
+LITTLE = _norm_all(["a little", "little", "a bit", "bit", "slightly", "thoda", "थोड़ा", "थोडा", "ಸ್ವಲ್ಪ", "కొంచెం"])
+A_LOT = _norm_all(["a lot", "lot", "more", "much", "full", "बहुत", "ज्यादा", "ತುಂಬಾ", "ಜಾಸ್ತಿ", "చాలా", "ఎక్కువ"])
 _DOMAIN = re.compile(r"((?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?)", re.I)
 
 
@@ -105,10 +120,12 @@ class Match:
 def find_target(text: str, fuzzy: bool = True):
     """Find an app or website name. Returns (kind, key, matched_text) or None."""
     best = None
+    # also try without English plurals: "close all notepads" -> notepad
+    singular = " ".join(w[:-1] if len(w) > 4 and w.endswith("s") and w.isascii() else w for w in text.split())
     for kind, table in (("app", APP_NAMES), ("site", SITE_NAMES)):
         for key, names in table.items():
             for name in names:
-                if (best is None or len(name) > len(best[2])) and has(text, name):
+                if (best is None or len(name) > len(best[2])) and (has(text, name) or has(singular, name)):
                     best = (kind, key, name)
     if best or not fuzzy:
         return best
@@ -138,9 +155,10 @@ def _clean(text: str, stems, words=()) -> str:
 # ---- matching steps (tried in order) -----------------------------------------
 
 def _m_type(raw: str, t: str):
-    m = _TYPE_EN.match(raw)
-    if m:
-        return Match("type_text", arg=m.group(1).strip())
+    for pattern in _TYPE_EN:
+        m = pattern.search(raw)
+        if m and m.group(1).strip(" ,.:"):
+            return Match("type_text", arg=m.group(1).strip().strip('"“”'))
     if longest(t, TYPE):
         return Match("type_text", arg=_clean(t, TYPE, TYPE_FILLERS))
     return None
@@ -187,8 +205,14 @@ def _m_close(raw: str, t: str):
     if kind == "site":
         return Match("close_tab", target=key)
     if P.APPS[key].get("process"):
-        return Match("close_app", target=key)
+        # "close notepad" closes one window; "close all notepads" closes every one
+        return Match("close_app", target=key, arg="all" if longest(t, ALL_WORDS) else "")
     return Match("close_window", target=key)
+
+
+def _m_new_tab(raw: str, t: str):
+    # "open a new tab in notepad" means ctrl+T, not "open notepad again"
+    return Match("new_tab") if longest(t, NEW_TAB) else None
 
 
 def _m_open(raw: str, t: str):
@@ -235,6 +259,8 @@ def _m_open_unknown(t: str):
     left = _clean(t, OPEN, FILLERS)
     if not left:
         return None
+    if left in PRONOUNS:  # "open it" / "open that" = open the selected thing
+        return Match("enter")
     return Match("start_menu" if left.isascii() else "unknown_app", arg=left)
 
 
@@ -252,8 +278,21 @@ def match(raw: str) -> Match | None:
     t = normalize(raw)
     if not t:
         return None
-    for step in (_m_type, _m_url, _m_youtube, _m_search, _m_close, _m_open, _m_play_query):
+    for step in (_m_type, _m_url, _m_new_tab, _m_youtube, _m_search, _m_close, _m_open, _m_play_query):
         m = step(raw, t)
         if m:
             return m
-    return match_simple(t) or _m_open_unknown(t) or _m_bare(t)
+    m = match_simple(t) or _m_open_unknown(t) or _m_bare(t)
+    if m and m.intent in ("scroll_up", "scroll_down"):  # "come down a little" / "scroll down a lot"
+        m.arg = "little" if longest(t, LITTLE) else "lot" if longest(t, A_LOT) else ""
+    if m and m.intent in KEY_ACTIONS:
+        # Only short commands: "send it" presses Enter, but "send a mail to rahul" is a different task.
+        if len(t.split()) > 4:
+            return None
+        if m.intent == "delete_key" and longest(t, PERMANENT):
+            m.arg = "permanent"
+    return m
+
+
+KEY_ACTIONS = {"send_enter", "delete_key"}
+PERMANENT = _norm_all(["permanently", "forever", "permanent", "हमेशा के लिए", "ಶಾಶ್ವತವಾಗಿ", "శాశ్వతంగా"])

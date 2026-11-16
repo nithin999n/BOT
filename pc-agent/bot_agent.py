@@ -328,6 +328,9 @@ async def handle_command(sess: Session, msg: dict) -> None:
         return
     if m is not None and (not AGENT.available or router.prefer_builtin(text, m)):
         log.info("  -> %s %s", m.intent, m.target or m.arg)
+        if m.intent in SAFETY_INTENTS:  # "delete it" / "send it": safety word first
+            asyncio.create_task(run_smart(sess, text, lang, smart.Plan([m])))
+            return
         if m.needs_confirm:
             cid = uuid.uuid4().hex
             sess.pending[cid] = {"kind": "intent", "match": m, "text": text, "at": time.time()}
@@ -352,7 +355,9 @@ async def run_smart(sess: Session, text: str, lang: str, p: "smart.Plan") -> Non
     """Free smart mode: click-by-name and chains. Falls back to the AI (if set up) when stuck."""
     loop = asyncio.get_running_loop()
     try:
-        if security.is_sensitive(text) and any(isinstance(s, smart.ClickStep) for s in p.steps):
+        guarded = any(isinstance(s, matcher.Match) and s.intent in SAFETY_INTENTS for s in p.steps)
+        clicks_something_risky = security.is_sensitive(text) and any(isinstance(s, smart.ClickStep) for s in p.steps)
+        if guarded or clicks_something_risky:
             ok = await ask_safety_word(sess, f"This may delete, send or share something:\n“{text}”\n\n"
                                              "Say or type your safety word to continue.")
             if not ok:
@@ -379,7 +384,10 @@ async def run_smart(sess: Session, text: str, lang: str, p: "smart.Plan") -> Non
                             message="Something went wrong with that task (see bot.log).")
 
 
-NO_WORD_MSG = "This needs your safety word, but you haven't set one yet. Set it in the app: ⋮ menu → Set safety word."
+SAFETY_INTENTS = {"send_enter", "delete_key"}  # always ask for the safety word first
+QUICK_ACTIONS = {"lock", "mute", "play_pause", "screenshot", "show_desktop", "volume_up", "volume_down"}
+
+NO_WORD_MSG ="This needs your safety word, but you haven't set one yet. Set it in the app: ⋮ menu → Set safety word."
 
 
 def cancelled_msg() -> str:
@@ -502,6 +510,11 @@ async def dispatch(sess: Session, msg: dict) -> None:
     elif kind == "stop":
         AGENT.stop()
         smart.RUNNER.stop()
+    elif kind == "quick":  # one-tap buttons in the app (e.g. Lock)
+        action = str(msg.get("action", ""))
+        if action in QUICK_ACTIONS:
+            log.info("Quick action: %s", action)
+            await run_match(sess.ws, matcher.Match(action), action)
     elif kind == "set_keyword":
         if sess.bad_old_words >= 5:
             await send(sess.ws, type="keyword_status", ok=False, set=security.is_set(CFG),

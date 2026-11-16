@@ -102,12 +102,67 @@ def unknown_app(m: Match):
     return False, f"I don't know an app called '{m.arg}' yet. Add it to pc-agent/phrases.py"
 
 
+def _windows_of(process: str) -> list[int]:
+    """Visible top-level windows of an app, front-most first."""
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    found: list[int] = []
+    proc_cb = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def visit(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd) or user32.GetWindowTextLengthW(hwnd) == 0:
+            return True
+        if user32.GetWindow(hwnd, 4):  # GW_OWNER: skip dialogs owned by another window
+            return True
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        h = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if h:
+            buf = ctypes.create_unicode_buffer(512)
+            size = ctypes.c_ulong(512)
+            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                if os.path.basename(buf.value).lower() == process.lower():
+                    found.append(hwnd)
+            kernel32.CloseHandle(h)
+        return True
+
+    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    user32.GetWindow.restype = ctypes.c_void_p
+    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p,
+                                                     ctypes.POINTER(ctypes.c_ulong)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    user32.EnumWindows(proc_cb(visit), 0)  # enumerates front-most window first
+    return found
+
+
 def close_app(m: Match):
     spec = P.APPS[m.target]
+    if m.arg != "all":
+        windows = _windows_of(spec["process"])
+        if windows:  # close just the front-most window, like clicking its X
+            ctypes.windll.user32.PostMessageW(ctypes.c_void_p(windows[0]), 0x0010, 0, 0)  # WM_CLOSE
+            left = len(windows) - 1
+            return True, f"Closed a {spec['label']} window" + (f" ({left} still open)" if left else "")
     res = _run("taskkill", "/im", spec["process"])  # no /f: lets the app ask "save changes?"
     if res.returncode == 0:
-        return True, f"Closed {spec['label']}"
+        return True, f"Closed {'all ' if m.arg == 'all' else ''}{spec['label']}"
     return False, f"{spec['label']} doesn't seem to be running"
+
+
+def send_enter(_m):
+    pyautogui.press("enter")
+    return True, "Sent (pressed Enter)"
+
+
+def delete_key(m: Match):
+    if m.arg == "permanent":
+        pyautogui.hotkey("shift", "delete")
+        return True, "Deleted permanently (Shift+Delete)"
+    pyautogui.press("delete")
+    return True, "Deleted (pressed Delete)"
 
 
 def google_search(m: Match):
@@ -174,9 +229,10 @@ def sleep(_m):
 
 
 def scroll(amount: int, msg: str):
-    def run(_m):
-        pyautogui.scroll(amount)
-        return True, msg
+    def run(m):
+        factor = {"little": 0.4, "lot": 2.5}.get(getattr(m, "arg", ""), 1.0)
+        pyautogui.scroll(int(amount * factor))
+        return True, msg + {"little": " a little", "lot": " a lot"}.get(getattr(m, "arg", ""), "")
     return run
 
 
@@ -257,6 +313,8 @@ ACTIONS = {
     "undo": _keys("ctrl", "z", msg="Undone"),
     "select_all": _keys("ctrl", "a", msg="Selected all"),
     "enter": _keys("enter", msg="Pressed Enter"),
+    "send_enter": send_enter,
+    "delete_key": delete_key,
     "scroll_up": scroll(600, "Scrolled up"),
     "scroll_down": scroll(-600, "Scrolled down"),
     "click": click,
