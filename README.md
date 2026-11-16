@@ -55,6 +55,32 @@ Shutdown, restart and sleep ask **"Are you sure?"** on the phone first.
 Say **"cancel shutdown"** within 15 seconds to stop one.
 Moving the mouse into a screen corner stops any running mouse or keyboard action (safety stop).
 
+## BOT's face, cursor and remote control
+
+- **The face:** BOT is a glowing blue robot face. **Hold it** to talk, **tap it** to see a random mood.
+  It falls asleep when the PC is offline, thinks while working, and smiles when a task is done.
+  On the same network, **its eyes follow your PC mouse**. While BOT works, they follow its bubble.
+- **The bubble cursor:** when BOT clicks or works on the PC, a **blue bubble with a pointer** glides there first.
+  - **To cancel:** move your mouse or press **Esc** while the bubble is moving. BOT won't click.
+  - **To turn it off or on:** use the app menu → *BOT cursor on PC*, or say "hide the cursor" / "show the cursor"
+    (कर्सर बंद करो · ಕರ್ಸರ್ ಆಫ್ ಮಾಡು · కర్సర్ ఆఫ్ చేయి).
+- **Screen:** a live view of the PC screen. Tap = click, double-tap = double-click, long-press = right-click,
+  pinch = zoom. Use **Low** quality on mobile data.
+- **Touchpad:** the phone becomes a touchpad and keyboard. Move with 1 finger, tap to click, scroll with 2 fingers,
+  and 2-finger tap to right-click.
+
+## Use BOT outside home (Tailscale)
+
+1. Install **Tailscale** (free) on the PC: https://tailscale.com/download. Sign in.
+2. Install **Tailscale** on the phone from the Play Store. Sign in with the **same account** and turn it on.
+3. Connect to BOT once at home. The app learns the PC's Tailscale address by itself
+   (you can see it under ⚙ → *Tailscale address of the PC*).
+4. That's it. Away from home, the app tries Wi-Fi first and then goes through Tailscale. The status chip shows 🌐 *outside*.
+
+The PC must be **on and awake**. BOT keeps it awake while it's charging. Also set
+*Control Panel → Power Options → Choose what closing the lid does → Plugged in: Do nothing*
+if you close the lid.
+
 ## Teach it new words
 
 Everything BOT understands is in [`pc-agent/phrases.py`](pc-agent/phrases.py).
@@ -79,5 +105,7 @@ mobile-app/     Flutter app: lib/main.dart. The android/ folder is generated in 
 
 - [x] Phase 1: fixed voice commands in 4 languages, PIN pairing, APK build
 - [x] Phase 2: find the PC automatically on Wi-Fi, start with Windows, fixed signing key (APK updates install in place)
-- [ ] Phase 3: on-screen "ghost cursor" so you can watch BOT work; click buttons by name (UI Automation)
-- [ ] Phase 4: AI brain for free-form multi-step tasks
+- [x] Phase 3: robot face with moods and mouse-tracking eyes, blue bubble cursor (cancel with mouse or Esc, on/off switch)
+- [x] Phase 4: live screen view and touchpad + keyboard
+- [x] Phase 5: use from outside home via Tailscale
+- [ ] Next: click buttons by name ("click Submit"), routines, AI brain for free-form tasks

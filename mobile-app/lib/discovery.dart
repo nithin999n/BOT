@@ -7,10 +7,11 @@ const discoveryPort = 8766;
 const _magic = 'BOT_DISCOVER_V1';
 
 class FoundPc {
-  const FoundPc(this.name, this.host, this.port);
+  const FoundPc(this.name, this.host, this.port, {this.tailscale = ''});
   final String name;
   final String host;
   final int port;
+  final String tailscale; // the PC's Tailscale address, if it has one (for outside use)
 }
 
 /// Broadcasts on the local Wi-Fi and collects every BOT PC that answers.
@@ -35,7 +36,8 @@ Future<List<FoundPc>> discoverPcs({
       if (msg['bot'] != 'BOT') return;
       final host = dg.address.address;
       final port = (msg['port'] as num?)?.toInt() ?? 8765;
-      found['$host:$port'] = FoundPc((msg['name'] ?? host).toString(), host, port);
+      found['$host:$port'] = FoundPc((msg['name'] ?? host).toString(), host, port,
+          tailscale: (msg['tailscale'] ?? '').toString());
     } catch (_) {
       // not a BOT reply
     }

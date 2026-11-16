@@ -12,7 +12,9 @@ import pyautogui
 import pyperclip
 
 import phrases as P
+import win_input
 from matcher import Match
+from overlay import BUBBLE
 
 pyautogui.PAUSE = 0.05
 pyautogui.FAILSAFE = True  # slam the mouse into a screen corner to abort
@@ -22,6 +24,20 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(list(args), capture_output=True, text=True, creationflags=_NO_WINDOW)
+
+
+def paste_text(text: str) -> None:
+    _paste_text(text)
+
+
+# Keys the phone's keyboard bar may press.
+ALLOWED_KEYS = {"enter", "backspace", "esc", "tab", "left", "right", "up", "down", "win", "space",
+                "delete", "home", "end", "pageup", "pagedown", "f5"}
+
+
+def press_key(name: str) -> None:
+    if name in ALLOWED_KEYS:
+        pyautogui.press(name)
 
 
 def _paste_text(text: str) -> None:
@@ -179,6 +195,26 @@ def right_click(_m):
     return True, "Right-clicked"
 
 
+class _PowerStatus(ctypes.Structure):
+    _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+
+
+def power_status() -> _PowerStatus:
+    s = _PowerStatus()
+    ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s))
+    return s
+
+
+def battery(_m):
+    s = power_status()
+    if s.BatteryFlag == 128 or s.BatteryLifePercent == 255:
+        return True, "This PC has no battery"
+    state = "charging" if s.ACLineStatus == 1 else "on battery"
+    return True, f"Battery {s.BatteryLifePercent}% ({state})"
+
+
 HELP_TEXT = (
     "Try: open chrome · volume up · mute · search <anything> · play <song> on youtube · "
     "type <text> · close chrome · screenshot · scroll down · lock · shutdown.\n"
@@ -226,6 +262,9 @@ ACTIONS = {
     "click": click,
     "double_click": double_click,
     "right_click": right_click,
+    "battery": battery,
+    "bubble_off": lambda _m: (True, "BOT cursor hidden"),   # the switch itself is flipped in bot_agent
+    "bubble_on": lambda _m: (True, "BOT cursor is back"),
     "help": lambda _m: (True, HELP_TEXT),
     "greeting": lambda _m: (True, "Hi! I'm listening. Say 'help' to see what I can do."),
 }
@@ -237,12 +276,31 @@ CONFIRM_TEXT = {
 }
 
 
+# Mouse actions: the bubble glides to the spot first, then pulses when BOT acts.
+POINTER_LABELS = {
+    "click": "Clicking", "double_click": "Double-clicking", "right_click": "Right-clicking",
+    "scroll_up": "Scrolling up", "scroll_down": "Scrolling down",
+}
+# No bubble for these (screen is about to lock / turn off, or the text is too long).
+NO_BUBBLE = {"lock", "shutdown", "restart", "sleep", "help", "bubble_off"}
+
+
 def execute(m: Match):
     action = ACTIONS.get(m.intent)
     if action is None:
         return False, f"'{m.intent}' isn't implemented yet"
     try:
-        return action(m)
+        if m.intent in POINTER_LABELS:
+            x, y = win_input.cursor_pos()
+            if not BUBBLE.glide_to(x, y, POINTER_LABELS[m.intent]):
+                return False, "Cancelled: you took over the mouse"
+            ok, message = action(m)
+            BUBBLE.pulse()
+            return ok, message
+        ok, message = action(m)
+        if m.intent not in NO_BUBBLE:
+            BUBBLE.pop(message, ok)
+        return ok, message
     except pyautogui.FailSafeException:
         return False, "Stopped: mouse was moved to a screen corner (safety stop)"
     except Exception as exc:  # report any failure back to the phone instead of crashing

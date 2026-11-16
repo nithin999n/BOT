@@ -216,6 +216,11 @@ WINDOW = ["window", "विंडो", "ವಿಂಡೋ", "విండో"]
 THIS = ["this", "it", "इसे", "इसको", "ಇದನ್ನು", "ಇದು", "దీన్ని", "ఇది"]
 TAB = ["tab", "टैब", "ಟ್ಯಾಬ್", "ట్యాబ్"]
 CHANGE = ["change", "बदल", "ಬದಲಿಸ", "ಬದಲಾಯಿಸ", "మార్చ"]
+CURSOR = ["cursor", "bubble", "pointer", "कर्सर", "बबल", "पॉइंटर", "ಕರ್ಸರ್", "ಬಬಲ್", "ಪಾಯಿಂಟರ್",
+          "కర్సర్", "బబుల్", "పాయింటర్"]
+HIDE = ["hide", "disable", "remove", "छुपा", "छिपा", "हटा", "ಮರೆಮಾಡ", "ತೆಗೆ", "దాచ", "తీసే"]
+ON = ["on", "ऑन", "चालू", "ಆನ್", "ఆన్"]
+SHOW = ["show", "enable", "bring back", "दिखा", "वापस", "ತೋರಿಸ", "ವಾಪಸ್", "చూపించ", "చూపు"]
 
 SIMPLE = [
     {"intent": "volume_up", "rules": [[VOLUME, MORE], [["louder", "turn it up"]]]},
@@ -258,6 +263,11 @@ SIMPLE = [
     {"intent": "double_click", "rules": [[["double click", "डबल क्लिक", "ಡಬಲ್ ಕ್ಲಿಕ್", "డబుల్ క్లిక్"]]]},
     {"intent": "right_click", "rules": [[["right click", "राइट क्लिक", "ರೈಟ್ ಕ್ಲಿಕ್", "రైట్ క్లిక్"]]]},
     {"intent": "click", "rules": [[["click", "क्लिक", "ಕ್ಲಿಕ್", "క్లిక్"]]]},
+    # Turn BOT's blue bubble cursor off / on. priority beats "show desktop", "close window" etc.
+    {"intent": "bubble_off", "priority": 2, "rules": [[CURSOR, OFF + HIDE]]},
+    {"intent": "bubble_on", "priority": 2, "rules": [[CURSOR, ON + SHOW]]},
+    {"intent": "battery", "rules": [[["battery", "battery level", "बैटरी", "चार्ज", "ಬ್ಯಾಟರಿ", "ಚಾರ್ಜ್",
+                                       "బ్యాటరీ", "ఛార్జ్", "చార్జ్"]]]},
     {"intent": "help", "rules": [[["help", "what can you do", "commands", "मदद", "हेल्प",
                                     "ಸಹಾಯ", "ಹೆಲ್ಪ್", "సహాయం", "హెల్ప్"]]]},
     {"intent": "greeting", "rules": [[["hi", "hello", "hey", "नमस्ते", "हेलो", "हैलो",

@@ -1,3 +1,5 @@
 websockets>=13.0
 pyautogui>=0.9.54
 pyperclip>=1.9.0
+mss>=9.0.1
+Pillow>=10.0.0
