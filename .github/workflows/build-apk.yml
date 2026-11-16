@@ -42,10 +42,18 @@ jobs:
       - name: Get packages
         run: |
           flutter pub get
-          flutter pub deps --style=compact | grep -E "^- (sensors_plus|file_picker|speech_to_text|web_socket_channel|shared_preferences) " || true
+          V=$(flutter pub deps --style=compact | grep -E "^- (sensors_plus|file_picker|speech_to_text|web_socket_channel|shared_preferences) " | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::notice title=Package versions::$V"
+          echo "::notice title=Flutter::$(flutter --version | head -1)"
 
       - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: |
+          set -o pipefail
+          if ! flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 | tee analyze.log; then
+            MSG=$(grep -E "^\s*error " analyze.log | head -30 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')
+            echo "::error title=Code check failed::$MSG"
+            exit 1
+          fi
 
       # Same key every build => new APKs install as updates (no uninstall needed).
       # The key lives in the repo secret ANDROID_DEBUG_KEYSTORE (base64), never in git.
