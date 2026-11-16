@@ -12,7 +12,7 @@ const _screenColor = Color(0xFF060B1E);
 
 Color _a(Color c, double opacity) => c.withAlpha((opacity.clamp(0.0, 1.0) * 255).round());
 
-enum Mood { idle, listening, thinking, happy, sad, confused, sleepy, surprised, wink, love, shy, excited, dizzy }
+enum Mood { idle, listening, thinking, happy, sad, confused, sleepy, surprised, wink, love, shy, excited, dizzy, purr }
 
 /// Target shape of the face for each mood; the face eases smoothly between them.
 class _Shape {
@@ -49,6 +49,7 @@ const _shapes = <Mood, _Shape>{
   Mood.love: _Shape(heart: 1, smile: 0.8, cat: 1, blush: 1, glow: 1),
   Mood.shy: _Shape(openL: 0.6, openR: 0.6, smile: 0.3, blush: 1, shy: 1, glow: 0.6, tilt: 0.08),
   Mood.excited: _Shape(star: 1, smile: 1, mouthOpen: 0.6, blush: 0.8, glow: 1, scale: 1.05),
+  Mood.purr: _Shape(arc: 1, smile: 0.8, cat: 1, blush: 1, glow: 0.9, tilt: 0.07), // being petted
   Mood.dizzy: _Shape(spiral: 1, smile: -0.1, mouthOpen: 0.12, glow: 0.45, tilt: 0.05),
 };
 
@@ -85,6 +86,7 @@ class RobotFace extends StatefulWidget {
     this.level = 0,
     this.size = 260,
     this.poke = 0,
+    this.color = botBlue,
   });
 
   final Mood mood;
@@ -93,6 +95,7 @@ class RobotFace extends StatefulWidget {
   final double level;
   final double size;
   final int poke;
+  final Color color; // BOT's colour (blue, pink, purple...)
 
   @override
   State<RobotFace> createState() => _RobotFaceState();
@@ -111,7 +114,7 @@ class _RobotFaceState extends State<RobotFace> with SingleTickerProviderStateMix
   Offset _prevTarget = Offset.zero;
   // idle habits
   String _habit = '';
-  double _habitUntil = 0, _nextHabit = 4, _lastActive = 0, _nextParticle = 0;
+  double _habitUntil = 0, _nextHabit = 4, _lastActive = 0, _nextParticle = 0, _nextPurrHeart = 0;
   // springs
   double _hopV = 0, _antV = 0;
 
@@ -304,6 +307,10 @@ class _RobotFaceState extends State<RobotFace> with SingleTickerProviderStateMix
       if (mood == Mood.love) _burst('heart', 1, speed: 0.2, size: 0.05);
       if (mood == Mood.excited) _burst('sparkle', 1, speed: 0.2, size: 0.05);
     }
+    if (mood == Mood.purr && _t > _nextPurrHeart) {
+      _nextPurrHeart = _t + 0.45;
+      _burst('heart', 1, speed: 0.25, size: 0.05);
+    }
     for (final p in s.particles) {
       p.life -= dt;
       p.x += p.vx * dt;
@@ -320,7 +327,7 @@ class _RobotFaceState extends State<RobotFace> with SingleTickerProviderStateMix
     return SizedBox(
       width: widget.size,
       height: widget.size,
-      child: CustomPaint(painter: _FacePainter(_s, _repaint)),
+      child: CustomPaint(painter: _FacePainter(_s, _repaint, widget.color)),
     );
   }
 }
@@ -361,17 +368,27 @@ Path _starPath(Offset c, double r, double rotation) {
 }
 
 class _FacePainter extends CustomPainter {
-  _FacePainter(this.s, Listenable repaint) : super(repaint: repaint);
+  _FacePainter(this.s, Listenable repaint, this.color) : super(repaint: repaint);
   final _FaceState s;
+  final Color color;
+
+  // BOT's colours, derived from the chosen colour (these shadow the blue defaults).
+  Color get botBlue => color;
+  Color get botLight => Color.lerp(color, Colors.white, 0.62)!;
+  Color get _eyeTop => Color.lerp(color, Colors.white, 0.85)!;
+  Color get _eyeBottom => Color.lerp(color, Colors.black, 0.18)!;
 
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width, h = size.height;
     final breathe = 1 + 0.012 * math.sin(s.t * 1.7);
-    final happyBounce = s.arc > 0.5 || s.star > 0.5 ? -(math.sin(s.t * 9)).abs() * h * 0.015 : 0.0;
+    final purring = s.mood == Mood.purr;
+    final happyBounce =
+        (s.arc > 0.5 || s.star > 0.5) && !purring ? -(math.sin(s.t * 9)).abs() * h * 0.015 : 0.0;
+    final purr = purring ? math.sin(s.t * 70) * w * 0.004 : 0.0; // tiny happy vibration
 
     canvas.save();
-    canvas.translate(w / 2, h / 2 + s.hop * h * 0.05 + happyBounce + math.sin(s.t * 2) * h * 0.01);
+    canvas.translate(w / 2 + purr, h / 2 + s.hop * h * 0.05 + happyBounce + math.sin(s.t * 2) * h * 0.01);
     canvas.rotate(s.tilt);
     canvas.scale(breathe * (1 + 0.08 * s.squish), breathe * (1 - 0.1 * s.squish));
 
@@ -577,10 +594,10 @@ class _FacePainter extends CustomPainter {
     canvas.drawRRect(
         r,
         Paint()
-          ..shader = const LinearGradient(
+          ..shader = LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFDDF6FF), botBlue, Color(0xFF3A8DF5)],
+            colors: [_eyeTop, botBlue, _eyeBottom],
           ).createShader(r.outerRect));
     if (open > 0.4) {
       // Two sparkly highlights that twinkle.
@@ -729,5 +746,5 @@ class _FacePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _FacePainter old) => old.s != s;
+  bool shouldRepaint(covariant _FacePainter old) => old.s != s || old.color != color;
 }

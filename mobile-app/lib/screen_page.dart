@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'connection.dart';
 import 'face.dart';
 import 'key_bar.dart';
+import 'style.dart';
 import 'voice.dart';
 
 /// Live view of the PC's main monitor. Tap = click (BOT's bubble glides there first),
@@ -297,6 +298,7 @@ class _ScreenPageState extends State<ScreenPage> {
           level: voice.listening ? voice.level : 0,
           size: size,
           poke: _poke,
+          color: style.value.color,
         ),
       ),
     );

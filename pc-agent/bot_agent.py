@@ -11,11 +11,13 @@ from __future__ import annotations
 import win_input  # first: makes the process DPI-aware so all coordinates are real pixels
 
 import asyncio
+import base64
 import ctypes
 import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -31,7 +33,10 @@ import websockets
 import actions
 import ai_agent
 import matcher
+import pyperclip
+
 import router
+import routines
 import screen
 import security
 import smart
@@ -117,6 +122,43 @@ def set_bubble(on: bool) -> None:
     log.info("Bubble cursor %s", "on" if on else "off")
 
 
+_net = {"mac": "", "broadcast": ""}  # for Wake-on-LAN from the phone
+DOWNLOADS = Path.home() / "Downloads" / "BOT"
+MAX_UPLOAD = 500 * 1024 * 1024
+
+
+def find_mac(ip: str) -> dict:
+    """MAC address and broadcast address of the network card the phone talks to."""
+    ps = (f"$a = Get-NetIPAddress -IPAddress '{ip}' -ErrorAction Stop; "
+          "$n = Get-NetAdapter -InterfaceIndex $a.InterfaceIndex; "
+          "Write-Output ($n.MacAddress + '|' + $a.PrefixLength)")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                             timeout=15, creationflags=_NO_WINDOW).stdout.strip()
+        mac, prefix = out.split("|")
+        parts = [int(p) for p in ip.split(".")]
+        mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+        num = sum(p << (24 - 8 * i) for i, p in enumerate(parts))
+        bcast = num | (~mask & 0xFFFFFFFF)
+        return {"mac": mac.replace("-", ":").upper(),
+                "broadcast": ".".join(str((bcast >> (24 - 8 * i)) & 255) for i in range(4))}
+    except Exception as exc:
+        log.warning("Couldn't read the network card's MAC address: %s", exc)
+        return {"mac": "", "broadcast": ""}
+
+
+def apply_style() -> None:
+    color = str(CFG.get("style", {}).get("color", ""))
+    if re.fullmatch(r"#?[0-9a-fA-F]{6}", color):
+        BUBBLE.set_color(color)
+
+
+def safe_filename(name: str) -> str:
+    name = os.path.basename(name.replace("\\", "/")) or "file"
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or "file"
+    return name[:150]
+
+
 def record_unmatched(text: str, lang: str) -> None:
     with UNMATCHED_PATH.open("a", encoding="utf-8") as f:
         f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{lang}\t{text}\n")
@@ -168,6 +210,9 @@ async def refresh_tailscale_forever() -> None:
             _tailscale_ip = ip
             if ip:
                 log.info("Tailscale address: %s (the phone can reach this PC from outside)", ip)
+        net = await asyncio.to_thread(find_mac, local_ip())  # Wi-Fi may have changed
+        if net["mac"]:
+            _net.update(net)
         await asyncio.sleep(60)
 
 
@@ -196,6 +241,7 @@ class Session:
         self.geom = win_input.primary_screen()  # area shown in the screen view
         self.buttons_down: set[str] = set()
         self.bad_old_words = 0
+        self.uploads: dict[str, dict] = {}  # files being sent from the phone
 
     def close(self) -> None:
         self.cursor_hz = 0
@@ -208,6 +254,10 @@ class Session:
             fut = item.get("future")
             if fut is not None and not fut.done():
                 fut.set_result(False)
+        for up in self.uploads.values():  # phone went away mid-transfer: remove the partial file
+            up["fh"].close()
+            Path(up["path"]).unlink(missing_ok=True)
+        self.uploads.clear()
         for task in (self.cursor_task, self.screen_task):
             if task and not task.done():
                 task.cancel()
@@ -316,6 +366,10 @@ async def handle_command(sess: Session, msg: dict) -> None:
             await send(sess.ws, type="result", ok=False, heard=text,
                        message="I'm still working on the last task. Say \"stop\" to cancel it.")
         return
+    routine = routines.match(CFG, text)
+    if routine is not None:
+        await start_routine(sess, routine, lang, heard=text)
+        return
     p = smart.plan(text)
     m = p.steps[0] if p and p.is_single_builtin else None
     if p and not p.is_single_builtin:
@@ -349,6 +403,19 @@ async def handle_command(sess: Session, msg: dict) -> None:
     await send(sess.ws, type="result", ok=False, heard=text,
                message=f"Sorry, I don't know \"{text}\" yet. Tip: say \"click <word>\" to click anything "
                        "on the screen, and join steps with \"and\".")
+
+
+async def start_routine(sess: Session, routine: dict, lang: str, heard: str = "") -> None:
+    steps: list = []
+    for step_text in routine["steps"]:
+        p = smart.plan(step_text)
+        if p is None:
+            await send(sess.ws, type="result", ok=False, heard=heard or routine["name"],
+                       message=f"Routine “{routine['name']}”: I don't understand the step “{step_text}”.")
+            return
+        steps.extend(p.steps)
+    log.info("  -> routine %s: %s", routine["name"], steps)
+    asyncio.create_task(run_smart(sess, " and ".join(routine["steps"]), lang, smart.Plan(steps)))
 
 
 async def run_smart(sess: Session, text: str, lang: str, p: "smart.Plan") -> None:
@@ -515,6 +582,38 @@ async def dispatch(sess: Session, msg: dict) -> None:
         if action in QUICK_ACTIONS:
             log.info("Quick action: %s", action)
             await run_match(sess.ws, matcher.Match(action), action)
+    elif kind == "routine_run":
+        name = str(msg.get("name", ""))
+        routine = next((r for r in routines.get(CFG) if r["name"] == name), None)
+        if routine:
+            await start_routine(sess, routine, str(msg.get("lang", "en")), heard=name)
+    elif kind == "routines_set":
+        CFG["routines"] = routines.clean(msg.get("routines"))
+        save_config()
+        await send(sess.ws, type="routines", items=routines.get(CFG))
+        await send(sess.ws, type="result", ok=True, message="Routines saved")
+    elif kind == "set_style":
+        name = str(msg.get("name", "BOT")).strip()[:20] or "BOT"
+        color = str(msg.get("color", "#4FC3FF"))
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            CFG["style"] = {"name": name, "color": color}
+            save_config()
+            apply_style()
+            BUBBLE.pop(f"Hi, I'm {name}!", hold=2.5)
+    elif kind == "clip_set":  # phone clipboard -> PC clipboard
+        text = str(msg.get("text", ""))[:200_000]
+        await asyncio.to_thread(pyperclip.copy, text)
+        BUBBLE.pop("📋 Clipboard from phone", hold=1.5)
+        await send(sess.ws, type="result", ok=True,
+                   message=f"Copied to the PC clipboard ({len(text)} characters). Paste with Ctrl+V.")
+    elif kind == "clip_get":  # PC clipboard -> phone
+        try:
+            text = await asyncio.to_thread(pyperclip.paste)
+        except pyperclip.PyperclipException:
+            text = ""
+        await send(sess.ws, type="clip", text=(text or "")[:200_000])
+    elif kind in ("file_begin", "file_chunk", "file_end"):
+        await handle_file(sess, kind, msg)
     elif kind == "set_keyword":
         if sess.bad_old_words >= 5:
             await send(sess.ws, type="keyword_status", ok=False, set=security.is_set(CFG),
@@ -551,6 +650,56 @@ async def dispatch(sess: Session, msg: dict) -> None:
         await asyncio.to_thread(actions.press_key, str(msg.get("key", "")))
 
 
+async def handle_file(sess: Session, kind: str, msg: dict) -> None:
+    """Phone -> PC file transfer, in base64 chunks. Saved to Downloads\\BOT."""
+    fid = str(msg.get("id", ""))[:40]
+    if kind == "file_begin":
+        size = int(_num(msg.get("size"), 0, 0, MAX_UPLOAD + 1))
+        if size > MAX_UPLOAD:
+            await send(sess.ws, type="file_status", id=fid, ok=False, message="That file is too big (max 500 MB).")
+            return
+        DOWNLOADS.mkdir(parents=True, exist_ok=True)
+        name = safe_filename(str(msg.get("name", "file")))
+        path = DOWNLOADS / name
+        stem, suffix, n = path.stem, path.suffix, 1
+        while path.exists():
+            path = DOWNLOADS / f"{stem} ({n}){suffix}"
+            n += 1
+        sess.uploads[fid] = {"fh": open(path, "wb"), "path": str(path), "size": size, "got": 0}
+        await send(sess.ws, type="file_ack", id=fid, got=0)
+        return
+    up = sess.uploads.get(fid)
+    if up is None:
+        return
+    if kind == "file_chunk":
+        try:
+            data = base64.b64decode(str(msg.get("data", "")), validate=True)
+        except ValueError:
+            data = b""
+        up["got"] += len(data)
+        if not data or up["got"] > up["size"]:
+            up["fh"].close()
+            Path(up["path"]).unlink(missing_ok=True)
+            sess.uploads.pop(fid, None)
+            await send(sess.ws, type="file_status", id=fid, ok=False, message="The file got corrupted on the way.")
+            return
+        await asyncio.to_thread(up["fh"].write, data)
+        await send(sess.ws, type="file_ack", id=fid, got=up["got"])
+        return
+    # file_end
+    sess.uploads.pop(fid, None)
+    up["fh"].close()
+    if up["got"] != up["size"]:
+        Path(up["path"]).unlink(missing_ok=True)
+        await send(sess.ws, type="file_status", id=fid, ok=False, message="The transfer was incomplete.")
+        return
+    name = Path(up["path"]).name
+    log.info("Received file %s (%d bytes)", name, up["size"])
+    BUBBLE.pop(f"📥 {name}", hold=2.5)
+    await send(sess.ws, type="file_status", id=fid, ok=True,
+               message=f"Saved {name} to Downloads\\BOT")
+
+
 def make_handler(cfg: dict):
     async def handler(ws):
         ip = ws.remote_address[0] if ws.remote_address else "?"
@@ -574,8 +723,10 @@ def make_handler(cfg: dict):
         log.info("Phone connected from %s", ip)
         await send(ws, type="welcome", pc=socket.gethostname(), tailscale=_tailscale_ip,
                    bubble=BUBBLE.wanted, ai=AGENT.available, busy=AGENT.busy or smart.RUNNER.busy,
-                   keyword_set=security.is_set(CFG),
-                   features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword"])
+                   keyword_set=security.is_set(CFG), mac=_net["mac"], broadcast=_net["broadcast"],
+                   routines=routines.get(CFG), style=CFG.get("style", {}),
+                   features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword",
+                             "routines", "files", "clipboard", "style"])
         sess = Session(ws)
         try:
             async for raw in ws:
@@ -613,7 +764,7 @@ async def main() -> int:
     cfg = CFG
     port = int(cfg["port"])
     try:
-        server = await websockets.serve(make_handler(cfg), "0.0.0.0", port, max_size=64 * 1024)
+        server = await websockets.serve(make_handler(cfg), "0.0.0.0", port, max_size=1024 * 1024)
     except OSError:
         log.error("Port %s is busy: BOT is probably already running in the background. "
                   "Run 'python autostart.py stop' to stop it.", port)
@@ -629,6 +780,7 @@ async def main() -> int:
 
     BUBBLE.wanted = bool(cfg.get("bubble_cursor", True))
     BUBBLE.start()
+    apply_style()
     jobs = [asyncio.create_task(refresh_tailscale_forever())]
     if cfg.get("keep_awake_when_charging", True):
         jobs.append(asyncio.create_task(keep_awake_forever()))

@@ -102,40 +102,99 @@ def unknown_app(m: Match):
     return False, f"I don't know an app called '{m.arg}' yet. Add it to pc-agent/phrases.py"
 
 
-def _windows_of(process: str) -> list[int]:
-    """Visible top-level windows of an app, front-most first."""
-    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
-    found: list[int] = []
+_u32 = ctypes.windll.user32
+_k32 = ctypes.windll.kernel32
+_u32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+_u32.GetWindow.restype = ctypes.c_void_p
+_u32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+_u32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+_u32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+_u32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+_u32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+_u32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+_u32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+_u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_u32.IsIconic.argtypes = [ctypes.c_void_p]
+_k32.OpenProcess.restype = ctypes.c_void_p
+_k32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p,
+                                            ctypes.POINTER(ctypes.c_ulong)]
+_k32.CloseHandle.argtypes = [ctypes.c_void_p]
+WM_CLOSE = 0x0010
+
+
+def _top_windows() -> list[tuple[int, str, str, str]]:
+    """Visible app windows, front-most first: (hwnd, exe name, title, window class)."""
+    found: list[tuple[int, str, str, str]] = []
     proc_cb = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     def visit(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd) or user32.GetWindowTextLengthW(hwnd) == 0:
+        length = _u32.GetWindowTextLengthW(hwnd)
+        if not _u32.IsWindowVisible(hwnd) or length == 0 or _u32.GetWindow(hwnd, 4):  # skip owned dialogs
             return True
-        if user32.GetWindow(hwnd, 4):  # GW_OWNER: skip dialogs owned by another window
-            return True
+        title = ctypes.create_unicode_buffer(length + 1)
+        _u32.GetWindowTextW(hwnd, title, length + 1)
+        cls = ctypes.create_unicode_buffer(256)
+        _u32.GetClassNameW(hwnd, cls, 256)
         pid = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
-        h = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+        _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        exe = ""
+        h = _k32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
         if h:
             buf = ctypes.create_unicode_buffer(512)
             size = ctypes.c_ulong(512)
-            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-                if os.path.basename(buf.value).lower() == process.lower():
-                    found.append(hwnd)
-            kernel32.CloseHandle(h)
+            if _k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                exe = os.path.basename(buf.value).lower()
+            _k32.CloseHandle(h)
+        found.append((hwnd, exe, title.value, cls.value))
         return True
 
-    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-    user32.GetWindow.restype = ctypes.c_void_p
-    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
-    user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
-    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
-    kernel32.OpenProcess.restype = ctypes.c_void_p
-    kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p,
-                                                     ctypes.POINTER(ctypes.c_ulong)]
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    user32.EnumWindows(proc_cb(visit), 0)  # enumerates front-most window first
+    _u32.EnumWindows(proc_cb(visit), 0)  # enumerates front-most window first
     return found
+
+
+def _windows_of(process: str) -> list[int]:
+    """Visible top-level windows of an app, front-most first."""
+    return [hwnd for hwnd, exe, _t, _c in _top_windows() if exe == process.lower()]
+
+
+def _focus(hwnd: int) -> None:
+    if _u32.IsIconic(hwnd):
+        _u32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    pyautogui.press("alt")  # lets a background program bring a window to the front
+    _u32.SetForegroundWindow(hwnd)
+    time.sleep(0.25)
+
+
+# Windows that "close everything" must never touch: the desktop, taskbar, BOT itself...
+_KEEP_CLASSES = {"progman", "workerw", "shell_traywnd", "shell_secondarytraywnd", "windows.ui.core.corewindow"}
+_KEEP_EXES = {"python.exe", "pythonw.exe", "textinputhost.exe", "shellexperiencehost.exe",
+              "startmenuexperiencehost.exe", "searchhost.exe", "lockapp.exe"}
+
+
+def close_everything(_m):
+    closed = 0
+    for hwnd, exe, _title, cls in _top_windows():
+        if cls.lower() in _KEEP_CLASSES or exe in _KEEP_EXES:
+            continue
+        if exe == "explorer.exe" and cls != "CabinetWClass":  # keep the shell; close folder windows
+            continue
+        _u32.PostMessageW(hwnd, WM_CLOSE, 0, 0)  # like clicking X: apps still ask to save
+        closed += 1
+    return True, f"Closed {closed} window{'s' if closed != 1 else ''} (apps with unsaved work will ask first)"
+
+
+def close_tab(m: Match):
+    """Close the current tab, or the tab of a site ("close youtube") wherever it is."""
+    if m.target in P.SITES:
+        label = P.SITES[m.target]["label"].lower()
+        hits = [hwnd for hwnd, _e, title, _c in _top_windows() if label in title.lower()]
+        if not hits:
+            return False, f"I don't see {P.SITES[m.target]['label']} open"
+        _focus(hits[0])
+        pyautogui.hotkey("ctrl", "w")
+        return True, f"Closed the {P.SITES[m.target]['label']} tab"
+    pyautogui.hotkey("ctrl", "w")
+    return True, "Closed tab"
 
 
 def close_app(m: Match):
@@ -143,7 +202,7 @@ def close_app(m: Match):
     if m.arg != "all":
         windows = _windows_of(spec["process"])
         if windows:  # close just the front-most window, like clicking its X
-            ctypes.windll.user32.PostMessageW(ctypes.c_void_p(windows[0]), 0x0010, 0, 0)  # WM_CLOSE
+            _u32.PostMessageW(windows[0], WM_CLOSE, 0, 0)
             left = len(windows) - 1
             return True, f"Closed a {spec['label']} window" + (f" ({left} still open)" if left else "")
     res = _run("taskkill", "/im", spec["process"])  # no /f: lets the app ask "save changes?"
@@ -303,7 +362,8 @@ ACTIONS = {
     "minimize": _keys("win", "down", msg="Minimized window"),
     "maximize": _keys("win", "up", msg="Maximized window"),
     "close_window": _keys("alt", "f4", msg="Closed window"),
-    "close_tab": _keys("ctrl", "w", msg="Closed tab"),
+    "close_tab": close_tab,
+    "close_everything": close_everything,
     "switch_window": _keys("alt", "tab", msg="Switched window"),
     "new_tab": _keys("ctrl", "t", msg="Opened a new tab"),
     "refresh": _keys("f5", msg="Refreshed"),
@@ -331,6 +391,7 @@ CONFIRM_TEXT = {
     "shutdown": "Shut down the PC?",
     "restart": "Restart the PC?",
     "sleep": "Put the PC to sleep?",
+    "close_everything": "Close all open windows? (Apps with unsaved work will ask before closing.)",
 }
 
 

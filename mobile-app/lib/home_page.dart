@@ -3,14 +3,18 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'connection.dart';
 import 'face.dart';
+import 'routines_page.dart';
 import 'safety_word.dart';
 import 'screen_page.dart';
 import 'settings_dialog.dart';
+import 'style.dart';
 import 'touchpad_page.dart';
+import 'transfer.dart';
 import 'voice.dart';
 
 class Lang {
@@ -83,6 +87,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _askedForKeyword = false;
   int _poke = 0; // tap = squish
   final _rnd = math.Random();
+  // petting (stroke the face) and shaking the phone
+  bool _petting = false;
+  double _petTravel = 0, _petTick = 0;
+  Offset? _lastPetPos;
+  StreamSubscription<UserAccelerometerEvent>? _accelSub;
+  final List<DateTime> _shakes = [];
+  DateTime _lastDizzy = DateTime(2000);
 
   int _lang = 0;
   final List<LogEntry> _log = [];
@@ -101,6 +112,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _flashMood(Mood.confused);
     };
     _eventSub = conn.events.listen(_onEvent);
+    style.addListener(_onChange);
+    loadStyle();
+    try {
+      _accelSub = userAccelerometerEventStream().listen(_onAccel, onError: (Object _) {});
+    } catch (_) {
+      // no motion sensor: no shake reaction
+    }
     _init();
     voice.init().then((ok) {
       if (!ok) {
@@ -117,6 +135,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     conn.removeListener(_onChange);
     voice.removeListener(_onChange);
+    style.removeListener(_onChange);
+    _accelSub?.cancel();
     _eventSub?.cancel();
     for (final t in [_flashTimer, _waitTimer, _holdTimer]) {
       t?.cancel();
@@ -158,6 +178,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Mood get _mood {
     if (voice.listening) return Mood.listening;
+    if (_petting) return Mood.purr;
     final flash = _flash;
     if (flash != null) return flash;
     if (_waiting || conn.busy) return Mood.thinking;
@@ -181,6 +202,61 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final options = _tapMoods.where((m) => m != _flash).toList();
     setState(() => _poke++);
     _flashMood(options[_rnd.nextInt(options.length)]);
+  }
+
+  /// Shake the phone -> BOT gets dizzy.
+  void _onAccel(UserAccelerometerEvent e) {
+    final g = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
+    if (g < 17) return;
+    final now = DateTime.now();
+    _shakes.add(now);
+    _shakes.removeWhere((t) => now.difference(t) > const Duration(milliseconds: 900));
+    if (_shakes.length >= 3 && now.difference(_lastDizzy) > const Duration(seconds: 3) && mounted) {
+      _lastDizzy = now;
+      _shakes.clear();
+      HapticFeedback.heavyImpact();
+      setState(() => _poke++);
+      _flashMood(Mood.dizzy, const Duration(milliseconds: 2600));
+      _say(_rnd.nextBool() ? 'Whoaaa… everything is spinning! 😵' : 'Stop shaking meee! 😵‍💫');
+    }
+  }
+
+  /// One-tap actions on the PC.
+  void _quick(String action, String label) {
+    HapticFeedback.selectionClick();
+    if (!conn.online) {
+      _say('Not connected to the PC');
+      _flashMood(Mood.sleepy);
+      return;
+    }
+    conn.send({'type': 'quick', 'action': action});
+    _addLog(label, mine: true);
+  }
+
+  Future<void> _wakePc() async {
+    HapticFeedback.mediumImpact();
+    if (conn.online) {
+      _say('The PC is already awake 🙂');
+      return;
+    }
+    if (conn.mac.isEmpty) {
+      _say('Connect to the PC once first, so I can learn how to wake it.');
+      return;
+    }
+    final ok = await conn.wake();
+    _say(ok
+        ? 'Wake signal sent! If your laptop supports it, it wakes in a few seconds.'
+        : 'Couldn\'t send the wake signal.');
+    _flashMood(ok ? Mood.excited : Mood.sad);
+  }
+
+  Future<void> _personalize() async {
+    final s = await showPersonalize(context);
+    if (s == null) return;
+    await saveStyle(s);
+    conn.send({'type': 'set_style', 'name': s.name, 'color': colorHex(s.color)});
+    _flashMood(Mood.love);
+    _say('Hi, I\'m ${s.name}! 💕');
   }
 
   void _lockPc() {
@@ -358,7 +434,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // Face: short tap = expression, hold = talk.
-  void _faceDown(PointerDownEvent _) {
+  /// Stroking the face = petting: BOT purrs with hearts.
+  void _faceMove(PointerMoveEvent e) {
+    if (!_fingerDown || voice.listening) return;
+    final last = _lastPetPos;
+    _lastPetPos = e.localPosition;
+    if (last == null) return;
+    _petTravel += (e.localPosition - last).distance;
+    if (!_petting && _petTravel > 22) {
+      _holdTimer?.cancel(); // moving finger = petting, not talking
+      _holdFired = true;
+      setState(() => _petting = true);
+    }
+    if (_petting && _petTravel - _petTick > 70) {
+      _petTick = _petTravel;
+      HapticFeedback.selectionClick(); // purr tick
+    }
+  }
+
+  void _faceDown(PointerDownEvent e) {
+    _lastPetPos = e.localPosition;
+    _petTravel = 0;
+    _petTick = 0;
     _fingerDown = true;
     _holdFired = false;
     _holdTimer?.cancel();
@@ -375,6 +472,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!_fingerDown) return;
     _fingerDown = false;
     _holdTimer?.cancel();
+    if (_petting) {
+      setState(() => _petting = false);
+      _flashMood(Mood.love, const Duration(milliseconds: 2200));
+      _say(_rnd.nextBool() ? 'Hehe, that tickles! 💕' : 'Purrrr… I love you too 🥰');
+      return;
+    }
     if (voice.listening) {
       voice.stop();
     } else if (!_holdFired) {
@@ -396,7 +499,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           children: [
             Text('Things you can say', style: Theme.of(ctx).textTheme.titleLarge),
             const SizedBox(height: 4),
-            const Text('Hold my face to talk. Tap my face to see my moods. Tap a chip to try it.'),
+            const Text('Hold my face to talk · tap me for a mood · stroke me to pet me 🥰 · '
+                'shake your phone to make me dizzy 😵 · say a routine name like "good night".'),
             for (final e in examples.entries) ...[
               const SizedBox(height: 14),
               Text(e.key, style: Theme.of(ctx).textTheme.titleSmall),
@@ -460,6 +564,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       valueListenable: conn.cursor,
       builder: (context, c, _) => Listener(
         onPointerDown: _faceDown,
+        onPointerMove: _faceMove,
         onPointerUp: _faceUp,
         onPointerCancel: _faceUp,
         child: RobotFace(
@@ -469,6 +574,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           level: voice.listening ? voice.level : 0,
           size: size,
           poke: _poke,
+          color: style.value.color,
         ),
       ),
     );
@@ -510,6 +616,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     ]);
   }
 
+  Widget _quickButton(IconData icon, String tip, VoidCallback onTap, {bool highlight = false}) {
+    return IconButton.filledTonal(
+      tooltip: tip,
+      visualDensity: VisualDensity.compact,
+      style: highlight ? IconButton.styleFrom(backgroundColor: Colors.amber.withAlpha(90)) : null,
+      icon: Icon(icon, size: 20),
+      onPressed: onTap,
+    );
+  }
+
   Widget _actionButton(IconData icon, String label, VoidCallback onTap) {
     return Expanded(
       child: FilledButton.tonal(
@@ -536,7 +652,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('BOT', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 3)),
+        title: Text(style.value.name,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: 2)),
         actions: [
           _statusChip(cs),
           PopupMenuButton<String>(
@@ -546,6 +664,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   conn.setBubble(!conn.bubbleOn);
                 case 'keyword':
                   setSafetyWord(context, conn);
+                case 'routines':
+                  _open(RoutinesPage(conn: conn, lang: languages[_lang].code));
+                case 'transfer':
+                  showTransfer(context, conn);
+                case 'style':
+                  _personalize();
                 case 'help':
                   _showHelp();
                 case 'settings':
@@ -553,6 +677,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(value: 'routines', child: Text('Routines')),
+              const PopupMenuItem(value: 'transfer', child: Text('Send files & clipboard')),
+              const PopupMenuItem(value: 'style', child: Text('Name & colour')),
               CheckedPopupMenuItem(
                 value: 'bubble',
                 checked: conn.bubbleOn,
@@ -573,7 +700,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       body: LayoutBuilder(builder: (context, box) {
         // While the keyboard is open, hide the face so the text box has room.
         final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
-        final faceSize = math.min(math.min(box.maxWidth * 0.62, box.maxHeight * 0.36), 260.0);
+        final faceSize = math.min(math.min(box.maxWidth * 0.6, box.maxHeight * 0.32), 250.0);
         return Column(
           children: [
             Padding(
@@ -609,6 +736,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   const SizedBox(width: 8),
                   _actionButton(Icons.lock, 'Lock PC', _lockPc),
                 ]),
+              ),
+              const SizedBox(height: 6),
+              // quick buttons
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _quickButton(Icons.volume_off, 'Mute', () => _quick('mute', '🔇 Mute')),
+                    _quickButton(Icons.volume_down, 'Volume down', () => _quick('volume_down', '🔉 Volume down')),
+                    _quickButton(Icons.volume_up, 'Volume up', () => _quick('volume_up', '🔊 Volume up')),
+                    _quickButton(Icons.play_arrow, 'Play / pause', () => _quick('play_pause', '⏯ Play / pause')),
+                    _quickButton(Icons.screenshot_monitor, 'Screenshot', () => _quick('screenshot', '📸 Screenshot')),
+                    _quickButton(Icons.upload_file, 'Send files', () => showTransfer(context, conn)),
+                    _quickButton(Icons.power_settings_new, 'Wake PC', _wakePc,
+                        highlight: conn.link == Link.offline && conn.mac.isNotEmpty),
+                  ],
+                ),
               ),
             ],
             Expanded(

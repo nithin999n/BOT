@@ -233,6 +233,12 @@ class Overlay:
         if self.active:
             self._q.put(("pulse", hold))
 
+    def set_color(self, hex_color: str) -> None:
+        """Recolour the bubble (e.g. '#FF7EB6' for a pink BOT)."""
+        h = hex_color.lstrip("#")
+        rgb = tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        self._q.put(("color", rgb))
+
     def position(self) -> tuple[float, float, bool]:
         """(x, y, visible): lets the phone's eyes follow the bubble while BOT works."""
         x, y = self._pos
@@ -331,6 +337,15 @@ class Overlay:
             self._alpha_target, self._hide_at = 255.0, now + dur + 3.0  # a pulse/pop shortens this
         elif kind == "pulse":
             self._pulse_t0, self._hide_at = now, now + cmd[1]
+        elif kind == "color":
+            global BLUE, BLUE_DEEP, LIGHT, _base_cache
+            rgb = cmd[1]
+            BLUE = rgb
+            BLUE_DEEP = tuple(int(c * 0.62) for c in rgb)
+            LIGHT = tuple(int(c + (255 - c) * 0.65) for c in rgb)
+            _base_cache = None
+            _label_cache.clear()
+            self._set_image(self._text, self._ok)
         elif kind == "hide":
             if self._glide:
                 self._glide[4].set()

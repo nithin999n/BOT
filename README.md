@@ -69,6 +69,19 @@ Moving the mouse into a screen corner stops any running mouse or keyboard action
 - **Touchpad:** the phone becomes a touchpad and keyboard. Move with 1 finger, tap to click, scroll with 2 fingers,
   and 2-finger tap to right-click.
 
+## Fun & handy extras
+
+- **Pet BOT:** stroke its face and it purrs with hearts 🥰. **Shake your phone** and it gets dizzy 😵.
+- **Quick buttons:** Mute, Volume −/+, Play/Pause, Screenshot, Send files, **Wake PC**, plus the big **Lock PC** button.
+  (Unlocking isn't possible: Windows only unlocks with your password at the PC.)
+- **Wake PC (Wake-on-LAN):** wakes the laptop from sleep when you're on the same Wi-Fi, if its network card supports it.
+  The phone learns the PC's address automatically after connecting once.
+- **Routines:** say "**good night**" (closes everything, then locks) or "**study mode**" (closes YouTube, opens VS Code).
+  Make your own in ⋮ → **Routines**: one command per line, exactly what you'd say.
+- **Name & colour:** ⋮ → **Name & colour**. Pink BOT 🎀? The PC bubble cursor changes colour too.
+- **Phone ⇄ PC:** ⋮ → **Send files & clipboard**. Photos and files land in `Downloads\BOT`.
+  The clipboard works both ways ("My clipboard → PC", "PC clipboard → me").
+
 ## Smart mode: click anything & chain steps (free, offline)
 
 BOT reads the words on your screen with Windows' built-in text reader (OCR), so you can click **anything that has a name**:

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -50,6 +51,10 @@ class BotConnection extends ChangeNotifier {
   bool aiReady = false; // the PC has an Anthropic API key: "do anything" tasks work
   bool keywordSet = false; // a safety word is set on the PC
   bool busy = false; // the PC is working on an AI task right now
+  String mac = ''; // the PC's network card, for Wake-on-LAN
+  String broadcast = '';
+  List<Map<String, dynamic>> routines = [];
+  final _fileEvents = StreamController<Map<String, dynamic>>.broadcast();
 
   final cursor = ValueNotifier<CursorPos?>(null);
   final screenInfo = ValueNotifier<ScreenInfo?>(null);
@@ -78,6 +83,8 @@ class BotConnection extends ChangeNotifier {
     pin = p.getString('pin') ?? '';
     pcName = p.getString('pcName') ?? '';
     remoteHost = p.getString('remoteHost') ?? '';
+    mac = p.getString('mac') ?? '';
+    broadcast = p.getString('broadcast') ?? '';
     notifyListeners();
   }
 
@@ -88,6 +95,8 @@ class BotConnection extends ChangeNotifier {
     await p.setString('pin', pin);
     await p.setString('pcName', pcName);
     await p.setString('remoteHost', remoteHost);
+    await p.setString('mac', mac);
+    await p.setString('broadcast', broadcast);
   }
 
   Future<void> updateSettings({
@@ -246,6 +255,11 @@ class BotConnection extends ChangeNotifier {
         aiReady = msg['ai'] == true;
         keywordSet = msg['keyword_set'] == true;
         busy = msg['busy'] == true;
+        if ((msg['mac'] ?? '').toString().isNotEmpty) {
+          mac = msg['mac'].toString();
+          broadcast = (msg['broadcast'] ?? '').toString();
+        }
+        routines = _routinesFrom(msg['routines']);
         _failures = 0;
         _setLink(Link.online);
         save();
@@ -270,6 +284,13 @@ class BotConnection extends ChangeNotifier {
         keywordSet = msg['set'] == true;
         notifyListeners();
         _events.add(BotEvent('keyword_status', text, ok: msg['ok'] == true));
+      case 'routines':
+        routines = _routinesFrom(msg['items']);
+        notifyListeners();
+      case 'clip':
+        _events.add(BotEvent('clip', (msg['text'] ?? '').toString()));
+      case 'file_ack' || 'file_status':
+        _fileEvents.add(msg);
       case 'error':
         _events.add(BotEvent('error', text, ok: false));
         if (msg['fatal'] == true) _autoReconnect = false;
@@ -310,6 +331,119 @@ class BotConnection extends ChangeNotifier {
   /// Stop the AI task that's running on the PC.
   void stopTask() => send({'type': 'stop'});
 
+  static List<Map<String, dynamic>> _routinesFrom(dynamic raw) {
+    if (raw is! List) return [];
+    return [
+      for (final r in raw)
+        if (r is Map)
+          {
+            'name': (r['name'] ?? '').toString(),
+            'aliases': [for (final a in (r['aliases'] as List? ?? const [])) a.toString()],
+            'steps': [for (final s in (r['steps'] as List? ?? const [])) s.toString()],
+          },
+    ];
+  }
+
+  void saveRoutines(List<Map<String, dynamic>> items) {
+    routines = items;
+    notifyListeners();
+    send({'type': 'routines_set', 'routines': items});
+  }
+
+  /// Wake the PC from sleep with a "magic packet" (Wake-on-LAN). Only works on the same
+  /// Wi-Fi, and only if the PC's network card supports it.
+  Future<bool> wake() async {
+    final parts = mac.split(':');
+    if (parts.length != 6) return false;
+    final macBytes = parts.map((h) => int.parse(h, radix: 16)).toList();
+    final packet = Uint8List(102);
+    packet.fillRange(0, 6, 0xFF);
+    for (var i = 1; i <= 16; i++) {
+      packet.setRange(i * 6, i * 6 + 6, macBytes);
+    }
+    final RawDatagramSocket sock;
+    try {
+      sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+    } catch (_) {
+      return false;
+    }
+    sock.broadcastEnabled = true;
+    final targets = <String>{'255.255.255.255', if (broadcast.isNotEmpty) broadcast};
+    try {
+      for (final iface in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
+        for (final a in iface.addresses) {
+          final p = a.address.split('.');
+          if (p.length == 4 && !a.isLoopback) targets.add('${p[0]}.${p[1]}.${p[2]}.255');
+        }
+      }
+    } catch (_) {}
+    for (var round = 0; round < 3; round++) {
+      for (final t in targets) {
+        for (final port in const [9, 7]) {
+          try {
+            sock.send(packet, InternetAddress(t), port);
+          } catch (_) {}
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    sock.close();
+    _retryTimer?.cancel();
+    _retryTimer = Timer(const Duration(seconds: 6), () {
+      if (!_disposed && link == Link.offline && configured) connect();
+    });
+    return true;
+  }
+
+  /// Send a file to the PC (saved in Downloads\BOT). Returns the PC's message.
+  Future<String> uploadFile(String name, int size, Stream<List<int>> data, void Function(double) onProgress) async {
+    if (!online) throw Exception('Not connected to the PC');
+    const chunkSize = 192 * 1024;
+    final id = '${DateTime.now().microsecondsSinceEpoch}';
+
+    Future<Map<String, dynamic>> nextEvent() => _fileEvents.stream
+        .firstWhere((m) => m['id'] == id)
+        .timeout(const Duration(seconds: 30));
+
+    Future<void> expectAck(Future<Map<String, dynamic>> f) async {
+      final r = await f;
+      if (r['type'] == 'file_status' && r['ok'] != true) throw Exception(r['message'] ?? 'Transfer failed');
+    }
+
+    var f = nextEvent();
+    send({'type': 'file_begin', 'id': id, 'name': name, 'size': size});
+    await expectAck(f);
+
+    var sent = 0;
+    final pending = BytesBuilder(copy: false);
+    Future<void> flush(Uint8List block) async {
+      final ack = nextEvent();
+      send({'type': 'file_chunk', 'id': id, 'data': base64Encode(block)});
+      await expectAck(ack);
+      sent += block.length;
+      onProgress(size == 0 ? 1 : sent / size);
+    }
+
+    await for (final part in data) {
+      pending.add(part);
+      if (pending.length >= chunkSize) {
+        final all = pending.takeBytes();
+        var off = 0;
+        while (all.length - off >= chunkSize) {
+          await flush(Uint8List.sublistView(all, off, off + chunkSize));
+          off += chunkSize;
+        }
+        if (off < all.length) pending.add(Uint8List.sublistView(all, off));
+      }
+    }
+    if (pending.length > 0) await flush(pending.takeBytes());
+    f = nextEvent();
+    send({'type': 'file_end', 'id': id});
+    final done = await f;
+    if (done['ok'] != true) throw Exception(done['message'] ?? 'Transfer failed');
+    return (done['message'] ?? 'Saved').toString();
+  }
+
   void setBubble(bool on) {
     bubbleOn = on;
     notifyListeners();
@@ -330,6 +464,7 @@ class BotConnection extends ChangeNotifier {
     _close();
     _frames.close();
     _events.close();
+    _fileEvents.close();
     cursor.dispose();
     screenInfo.dispose();
     super.dispose();

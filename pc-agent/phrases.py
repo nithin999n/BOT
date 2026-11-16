@@ -214,7 +214,7 @@ UP = ["up", "ऊपर", "अप", "ಮೇಲೆ", "ಮೇಲಕ್ಕೆ", "ಅ
 DOWN = ["down", "नीचे", "डाउन", "ಕೆಳಗೆ", "ಕೆಳಕ್ಕೆ", "ಡೌನ್", "కిందకి", "కిందికి", "క్రిందికి", "డౌన్"]
 WINDOW = ["window", "विंडो", "ವಿಂಡೋ", "విండో"]
 THIS = ["this", "it", "इसे", "इसको", "ಇದನ್ನು", "ಇದು", "దీన్ని", "ఇది"]
-TAB = ["tab", "टैब", "ಟ್ಯಾಬ್", "ట్యాబ్"]
+TAB = ["tab", "tabs", "टैब", "ಟ್ಯಾಬ್", "ట్యాబ్"]
 CHANGE = ["change", "बदल", "ಬದಲಿಸ", "ಬದಲಾಯಿಸ", "మార్చ"]
 CURSOR = ["cursor", "bubble", "pointer", "कर्सर", "बबल", "पॉइंटर", "ಕರ್ಸರ್", "ಬಬಲ್", "ಪಾಯಿಂಟರ್",
           "కర్సర్", "బబుల్", "పాయింటర్"]
@@ -246,6 +246,10 @@ SIMPLE = [
     {"intent": "maximize", "rules": [[["maximize", "maximise", "full screen", "fullscreen", "मैक्सिमाइज",
                                         "फुल स्क्रीन", "ಮ್ಯಾಕ್ಸಿಮೈಸ್", "ಫುಲ್ ಸ್ಕ್ರೀನ್", "మ్యాక్సిమైజ్", "ఫుల్ స్క్రీన్"]]]},
     {"intent": "close_tab", "priority": 1, "rules": [[CLOSE, TAB]]},
+    # Closes every app window like clicking its X (apps still ask before losing unsaved work).
+    {"intent": "close_everything", "confirm": True, "priority": 2, "rules": [[[
+        "close everything", "close all windows", "close all apps", "close all programs",
+        "सब कुछ बंद", "सब बंद", "सारे बंद", "ಎಲ್ಲವನ್ನೂ ಮುಚ್ಚ", "ಎಲ್ಲಾ ಮುಚ್ಚ", "అన్నీ మూస", "అన్ని మూస"]]]},
     {"intent": "close_window", "rules": [[CLOSE, WINDOW + THIS]]},
     {"intent": "switch_window", "rules": [[["switch window", "next window", "alt tab", "switch",
                                              "स्विच", "ಸ್ವಿಚ್", "స్విచ్"]], [WINDOW, CHANGE]]},

@@ -29,6 +29,25 @@ class RoutingTest(unittest.TestCase):
         self.assertFalse(router.is_stop("stop the music and open chrome"))
 
 
+class RoutinesTest(unittest.TestCase):
+    def test_match_and_plan(self):
+        import routines
+        import smart
+        for text, name in [("good night", "good night"), ("Goodnight bot", "good night"), ("शुभ रात्रि", "good night"),
+                           ("start study mode", "study mode"), ("ಸ್ಟಡಿ ಮೋಡ್", "study mode")]:
+            r = routines.match({}, text)
+            self.assertIsNotNone(r, text)
+            self.assertEqual(r["name"], name)
+        self.assertIsNone(routines.match({}, "good night everyone, how was your day"))
+        for r in routines.DEFAULT_ROUTINES:  # every default step must be understood
+            for step in r["steps"]:
+                self.assertIsNotNone(smart.plan(step), step)
+        self.assertEqual(smart.plan("close everything").steps[0].intent, "close_everything")
+        self.assertEqual(smart.plan("close youtube").steps[0].intent, "close_tab")
+        self.assertEqual(routines.clean([{"name": "x", "steps": []}, {"name": "ok", "steps": ["volume up"]}, "junk"]),
+                         [{"name": "ok", "aliases": [], "steps": ["volume up"]}])
+
+
 class SafetyWordTest(unittest.TestCase):
     def test_sensitive(self):
         for text in ["delete the files in downloads", "send a mail to rahul", "share this photo",
