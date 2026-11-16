@@ -70,23 +70,23 @@ class _TransferSheetState extends State<_TransferSheet> {
 
   Future<void> _sendFiles() async {
     if (!_checkOnline()) return;
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true, withReadStream: true);
-    if (result == null || result.files.isEmpty) return;
+    final files = await FilePicker.pickFiles(type: FileType.any);
+    if (files.isEmpty) return; // cancelled
     var done = 0;
-    for (final f in result.files) {
-      final stream = f.readStream;
-      if (stream == null) continue;
+    for (final f in files) {
+      if (!mounted) return;
       setState(() {
-        _status = 'Sending ${f.name} (${done + 1}/${result.files.length})…';
+        _status = 'Sending ${f.name} (${done + 1}/${files.length})…';
         _ok = true;
         _progress = 0;
       });
       try {
-        final msg = await conn.uploadFile(f.name, f.size, stream, (p) {
+        final size = await f.length() ?? (await f.readAsBytes()).length;
+        final msg = await conn.uploadFile(f.name, size, f.readAsByteStream(), (p) {
           if (mounted) setState(() => _progress = p);
         });
         done++;
-        _show(result.files.length > 1 ? '$msg ($done/${result.files.length})' : msg);
+        _show(files.length > 1 ? '$msg ($done/${files.length})' : msg);
       } catch (e) {
         _show('Couldn\'t send ${f.name}: ${e.toString().replaceFirst('Exception: ', '')}', ok: false);
         return;

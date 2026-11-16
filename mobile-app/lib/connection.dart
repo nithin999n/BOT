@@ -54,6 +54,9 @@ class BotConnection extends ChangeNotifier {
   String mac = ''; // the PC's network card, for Wake-on-LAN
   String broadcast = '';
   List<Map<String, dynamic>> routines = [];
+  bool petOn = true; // the little BOT on the PC desktop
+  Map<String, dynamic> walkaway = {'enabled': false, 'minutes': 1};
+  final health = ValueNotifier<Map<String, dynamic>?>(null); // cpu, ram, battery, charging, feeling
   final _fileEvents = StreamController<Map<String, dynamic>>.broadcast();
 
   final cursor = ValueNotifier<CursorPos?>(null);
@@ -260,6 +263,17 @@ class BotConnection extends ChangeNotifier {
           broadcast = (msg['broadcast'] ?? '').toString();
         }
         routines = _routinesFrom(msg['routines']);
+        petOn = msg['pet'] != false;
+        if (msg['walkaway'] is Map) walkaway = Map<String, dynamic>.from(msg['walkaway'] as Map);
+        if (msg['health'] is Map) health.value = Map<String, dynamic>.from(msg['health'] as Map);
+        final away = msg['away_alerts'];
+        if (away is List && away.isNotEmpty) {
+          final lines = [
+            for (final a in away)
+              if (a is Map) '${a['time'] ?? ''}  ${a['title'] ?? ''}: ${a['message'] ?? ''}'
+          ];
+          _events.add(BotEvent('away', lines.join('\n')));
+        }
         _failures = 0;
         _setLink(Link.online);
         save();
@@ -286,6 +300,16 @@ class BotConnection extends ChangeNotifier {
         _events.add(BotEvent('keyword_status', text, ok: msg['ok'] == true));
       case 'routines':
         routines = _routinesFrom(msg['items']);
+        notifyListeners();
+      case 'health':
+        health.value = msg;
+      case 'alert':
+        _events.add(BotEvent('alert', text, id: (msg['title'] ?? 'BOT').toString()));
+      case 'pet':
+        petOn = msg['on'] == true;
+        notifyListeners();
+      case 'walkaway':
+        walkaway = {'enabled': msg['enabled'] == true, 'minutes': msg['minutes'] ?? 1};
         notifyListeners();
       case 'clip':
         _events.add(BotEvent('clip', (msg['text'] ?? '').toString()));
@@ -467,6 +491,7 @@ class BotConnection extends ChangeNotifier {
     _fileEvents.close();
     cursor.dispose();
     screenInfo.dispose();
+    health.dispose();
     super.dispose();
   }
 }
