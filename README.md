@@ -84,7 +84,7 @@ Moving the mouse into a screen corner stops any running mouse or keyboard action
 
 ## BOT on your PC desktop, controllers, health & safety
 
-- **Desktop BOT:** a little living BOT sits in the bottom-right corner of your PC.
+- **Desktop BOT:** a little living BOT sits in the bottom-right corner of your PC. **Grab it and throw it!** It flies, spins and bounces, and if you throw it hard it gets dizzy 😵 (the BOT on your phone too). Click it for a giggle. When idle, it goes for little walks.
   - Its eyes follow your mouse. It yawns when you're idle, sleeps (zzz) after 5 minutes,
     and gets excited when a task starts. The blue bubble flies out of it.
   - It sweats 😅 when the CPU is busy, looks worried on low battery, and sparkles ⚡ while charging.

@@ -905,6 +905,8 @@ async def main() -> int:
     BUBBLE.start()
     PET.wanted = bool(cfg.get("desktop_pet", True))
     PET.busy_fn = lambda: AGENT.busy or smart.RUNNER.busy
+    # Thrown / petted on the PC -> the BOT on your phone reacts too
+    PET.on_event = lambda ev: asyncio.run_coroutine_threadsafe(broadcast(type="pet_event", event=ev), loop)
     PET.start()
     apply_style()
     jobs = [asyncio.create_task(refresh_tailscale_forever()), asyncio.create_task(watch_forever())]

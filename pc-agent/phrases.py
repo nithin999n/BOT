@@ -182,7 +182,8 @@ SITES = {
     "netflix": {"label": "Netflix", "url": "https://www.netflix.com",
                 "names": ["netflix", "नेटफ्लिक्स", "ನೆಟ್‌ಫ್ಲಿಕ್ಸ್", "నెట్‌ఫ్లిక్స్"]},
     "chatgpt": {"label": "ChatGPT", "url": "https://chatgpt.com",
-                "names": ["chatgpt", "chat gpt", "चैटजीपीटी", "चैट जीपीटी", "ಚಾಟ್‌ಜಿಪಿಟಿ", "చాట్‌జీపీటీ"]},
+                "names": ["chatgpt", "chat gpt", "चैटजीपीटी", "चैट जीपीटी", "चैट जिपिटी", "ಚಾಟ್‌ಜಿಪಿಟಿ",
+                          "ಚಾಟ್ ಜಿಪಿಟಿ", "ಚಾಟ್ ಜೀಪೀಟಿ", "చాట్‌జీపీటీ", "చాట్ జీపీటీ", "చాట్ జిపిటి", "చాట్ జీపిటి"]},
     "claude": {"label": "Claude", "url": "https://claude.ai",
                "names": ["claude", "क्लॉड", "ಕ್ಲಾಡ್", "క్లాడ్"]},
 }

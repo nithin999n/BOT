@@ -438,6 +438,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addLog(e.message, ok: e.ok);
       case 'alert':
         _showAlert(e.id, e.message);
+      case 'pet_event':
+        if (e.message == 'dizzy') {
+          HapticFeedback.heavyImpact();
+          setState(() => _poke++);
+          _flashMood(Mood.dizzy, const Duration(milliseconds: 3000));
+          _say(_rnd.nextBool() ? 'Ouch! Someone threw me on the PC! 😵' : 'Wheee… *bonk* 😵‍💫 my head is spinning!');
+        } else if (e.message == 'petted') {
+          _flashMood(Mood.love, const Duration(milliseconds: 2000));
+          _say('Hehe, someone petted me on the PC 🥰');
+        }
       case 'away':
         showDialog<void>(
           context: context,

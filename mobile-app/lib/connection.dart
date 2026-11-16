@@ -308,6 +308,8 @@ class BotConnection extends ChangeNotifier {
       case 'pet':
         petOn = msg['on'] == true;
         notifyListeners();
+      case 'pet_event': // the desktop BOT was thrown / petted on the PC
+        _events.add(BotEvent('pet_event', (msg['event'] ?? '').toString()));
       case 'walkaway':
         walkaway = {'enabled': msg['enabled'] == true, 'minutes': msg['minutes'] ?? 1};
         notifyListeners();

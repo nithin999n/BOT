@@ -23,7 +23,7 @@ import health
 import win_input
 from overlay import (AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BUBBLE, PM_REMOVE,
                      SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-                     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, _font,
+                     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, _font,
                      _premultiplied_bgra, gdi32, kernel32, user32)
 
 log = logging.getLogger("bot")
@@ -71,6 +71,23 @@ class Pet:
         self._center = (0.0, 0.0)
         self._shown = False
         self._alpha = 0.0
+        self.on_event = None      # callback(event: str) -> e.g. "dizzy", "petted" (tells the phone)
+        # physics: you can grab BOT, drag it and throw it around
+        self.vx = self.vy = 0.0
+        self.angle = 0.0          # degrees (spins while flying)
+        self.spin = 0.0
+        self.squish = 0.0
+        self.dragging = self.flying = self.walking = False
+        self._samples: list[tuple[float, float, float]] = []
+        self._grab_off = (0.0, 0.0)
+        self._grab_t = 0.0
+        self._moved = 0.0
+        self._hard_hit = False
+        self._dizzy_until = 0.0
+        self._walk_dir = 1
+        self._walk_to = 0.0
+        self._next_walk = time.perf_counter() + 25
+        self._last_img = None
 
     # -- public ------------------------------------------------------------------
     def start(self) -> None:
@@ -93,6 +110,135 @@ class Pet:
         """Where the bubble should fly out from (None if the pet isn't showing)."""
         return self._center if self.enabled and self.wanted and self._alpha > 20 else None
 
+    def _emit(self, event: str) -> None:
+        if self.on_event:
+            try:
+                self.on_event(event)
+            except Exception:
+                pass
+
+    # -- grab, drag, throw ---------------------------------------------------------
+    def _wnd(self, hwnd, msg, wparam, lparam):
+        if msg == 0x0021:            # WM_MOUSEACTIVATE: never steal focus from your app
+            return 3                 # MA_NOACTIVATE
+        if msg == 0x0020:            # WM_SETCURSOR: show a grabbing hand over BOT
+            user32.SetCursor(self._hand)
+            return 1
+        if msg == 0x0201:            # WM_LBUTTONDOWN
+            self._grab()
+            return 0
+        if msg == 0x0202:            # WM_LBUTTONUP
+            self._release()
+            return 0
+        if msg == 0x0215 and self.dragging:  # WM_CAPTURECHANGED (e.g. alt-tab while holding)
+            self._release()
+            return 0
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _grab(self) -> None:
+        cx, cy = win_input.cursor_pos()
+        now = time.perf_counter()
+        self.dragging, self.flying, self.walking = True, False, False
+        self._grab_off = (cx - self.x, cy - self.y)
+        self._samples = [(now, float(cx), float(cy))]
+        self._grab_t, self._moved = now, 0.0
+        user32.SetCapture(self._hwnd)
+
+    def _release(self) -> None:
+        if not self.dragging:
+            return
+        self.dragging = False
+        user32.ReleaseCapture()
+        now = time.perf_counter()
+        if self._moved < 6 and now - self._grab_t < 0.35:  # a click, not a throw: giggle
+            self._q.put(("react", "love", 2.0))
+            self._emit("petted")
+            self.flying = True  # let it settle on the floor
+            self.vx = self.vy = 0.0
+            return
+        recent = [s for s in self._samples if now - s[0] < 0.1] or self._samples[-2:]
+        if len(recent) >= 2 and recent[-1][0] > recent[0][0]:
+            dt = recent[-1][0] - recent[0][0]
+            self.vx = max(-6000.0, min(6000.0, (recent[-1][1] - recent[0][1]) / dt))
+            self.vy = max(-6000.0, min(6000.0, (recent[-1][2] - recent[0][2]) / dt))
+        else:
+            self.vx = self.vy = 0.0
+        self.spin = self.vx * 0.12
+        self._hard_hit = math.hypot(self.vx, self.vy) > 2600  # a big throw makes BOT dizzy
+        self.flying = True
+
+    def _physics(self, dt: float) -> None:
+        floor = self.bounds[3] - self.H
+        left, right, top = self.bounds[0] - self.W * 0.15, self.bounds[2] - self.W * 0.85, self.bounds[1]
+        if self.dragging:
+            cx, cy = win_input.cursor_pos()
+            now = time.perf_counter()
+            nx, ny = cx - self._grab_off[0], cy - self._grab_off[1]
+            self._moved += math.hypot(nx - self.x, ny - self.y)
+            self.x, self.y = nx, ny
+            self._samples.append((now, float(cx), float(cy)))
+            self._samples = [s for s in self._samples if now - s[0] < 0.15]
+            self.angle *= 0.8
+        elif self.flying:
+            self.vy += 2600 * dt  # gravity
+            self.x += self.vx * dt
+            self.y += self.vy * dt
+            self.angle += self.spin * dt
+            if self.x < left or self.x > right:  # bounce off the sides of the screen
+                self.x = left if self.x < left else right
+                self._hit(abs(self.vx))
+                self.vx, self.spin = -self.vx * 0.6, -self.spin * 0.7
+            if self.y < top:
+                self.y, self.vy = top, abs(self.vy) * 0.5
+            if self.y >= floor:  # land on the taskbar
+                self.y = floor
+                self._hit(abs(self.vy))
+                if abs(self.vy) > 250:
+                    self.vy, self.vx = -self.vy * 0.45, self.vx * 0.8
+                    self.squish = min(1.0, abs(self.vy) / 1200)
+                else:
+                    self.vy, self.vx, self.spin = 0.0, self.vx * 0.8, self.spin * 0.7
+                if self.vy == 0 and abs(self.vx) < 25:  # settled
+                    self.flying, self.vx = False, 0.0
+                    if self._hard_hit:
+                        self._hard_hit = False
+                        self._dizzy_until = time.perf_counter() + 3.2
+                        self._emit("dizzy")
+        elif self.walking:
+            self.x += self._walk_dir * 110 * dt
+            hop = abs(math.sin((time.perf_counter() - self._walk_t0) * 9)) * self.H * 0.06
+            self.y = floor - hop
+            if (self._walk_dir > 0 and self.x >= self._walk_to) or (self._walk_dir < 0 and self.x <= self._walk_to):
+                self.walking, self.y = False, floor
+        else:
+            self.y = min(self.y, floor)
+            if self.y < floor - 1:  # somehow in the air: fall down
+                self.flying = True
+        if not self.flying and not self.dragging:
+            self.angle *= 0.75  # stand back up
+            if abs(self.angle) < 0.5:
+                self.angle = 0.0
+        self.angle = (self.angle + 180) % 360 - 180
+        self.squish = max(0.0, self.squish - dt * 3)
+        self._center = (self.x + self.W / 2, self.y + self.H * 0.6)
+
+    def _hit(self, speed: float) -> None:
+        if speed > 1100:  # slammed into the edge of the screen
+            self._hard_hit = True
+
+    def _maybe_walk(self, mood: str) -> None:
+        now = time.perf_counter()
+        if mood != "idle" or self.flying or self.dragging or self.walking or now < self._next_walk:
+            return
+        self._next_walk = now + random.uniform(25, 50)
+        lo, hi = self.bounds[0] + 20, self.bounds[2] - self.W - 20
+        target = random.uniform(lo, hi)
+        if abs(target - self.x) < 80:
+            return
+        self._walk_to, self._walk_dir = target, (1 if target > self.x else -1)
+        self._walk_t0 = now
+        self.walking = True
+
     # -- window thread -------------------------------------------------------------
     def _run(self) -> None:
         try:
@@ -106,6 +252,8 @@ class Pet:
               "react": None, "react_until": 0.0, "yawn_until": 0.0, "next_yawn": 6.0, "particles": [],
               "next_particle": 0.0, "idle": 0.0, "idle_at": 0.0, "was_busy": False, "ant": 0.0, "ant_v": 0.0}
         last_sig = None
+        last_pos = None
+        last_t = time.perf_counter()
         while True:
             while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
                 user32.TranslateMessage(ctypes.byref(msg))
@@ -123,16 +271,37 @@ class Pet:
             except queue.Empty:
                 pass
             try:
+                now = time.perf_counter()
+                dt, last_t = min(0.05, now - last_t), now
+                self._physics(dt)
                 params = self._update(st)
+                self._maybe_walk(params["mood"])
                 sig = params["sig"]
-                if sig != last_sig:
-                    last_sig = sig
-                    self._push(self._render(params, st), params["alpha"])
-                fps = 24 if params["active"] else (4 if params["mood"] == "asleep" else 12)
+                pos = (int(self.x), int(self.y))
+                if sig != last_sig or self._last_img is None:
+                    last_sig, last_pos = sig, pos
+                    self._last_img = self._transform(self._render(params, st))
+                    self._push(self._last_img, params["alpha"])
+                elif pos != last_pos:  # only moved: reuse the picture
+                    last_pos = pos
+                    self._push(self._last_img, params["alpha"])
+                moving = self.dragging or self.flying or self.walking
+                fps = 60 if moving else (24 if params["active"] else (4 if params["mood"] == "asleep" else 12))
             except Exception:
                 log.exception("desktop pet frame failed")
                 fps = 1
             time.sleep(1 / fps)
+
+    def _transform(self, img: Image.Image) -> Image.Image:
+        """Spin while flying, squish on landing."""
+        if abs(self.angle) > 0.5:
+            img = img.rotate(self.angle, resample=Image.BICUBIC)
+        if self.squish > 0.02:
+            nw, nh = int(self.W * (1 + 0.18 * self.squish)), int(self.H * (1 - 0.22 * self.squish))
+            out = Image.new("RGBA", (self.W, self.H), (0, 0, 0, 0))
+            out.paste(img.resize((nw, nh), Image.BILINEAR), ((self.W - nw) // 2, self.H - nh))
+            img = out
+        return img
 
     def _setup(self) -> None:
         try:
@@ -143,11 +312,17 @@ class Pet:
         self.W, self.H = int(self.S * 1.3), int(self.S * 1.45)
         wa = _Rect()
         user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(wa), 0)  # SPI_GETWORKAREA
-        self.x = wa.right - self.W - int(8 * scale)
-        self.y = wa.bottom - self.H - int(4 * scale)
+        self.bounds = (wa.left, wa.top, wa.right, wa.bottom + int(4 * scale))
+        self.x = float(wa.right - self.W - int(8 * scale))
+        self.y = float(self.bounds[3] - self.H)
         self._center = (self.x + self.W / 2, self.y + self.H * 0.6)
         self._glow = None
-        self._wndproc = WNDPROC(lambda h, m, w, l: user32.DefWindowProcW(h, m, w, l))
+        user32.LoadCursorW.restype = ctypes.c_void_p
+        user32.LoadCursorW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        user32.SetCursor.argtypes = [ctypes.c_void_p]
+        user32.SetCapture.argtypes = [ctypes.c_void_p]
+        self._hand = user32.LoadCursorW(None, ctypes.c_void_p(32649))  # IDC_HAND
+        self._wndproc = WNDPROC(self._wnd)
         hinst = kernel32.GetModuleHandleW(None)
         wc = WNDCLASSEXW()
         wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
@@ -155,8 +330,10 @@ class Pet:
         wc.hInstance = hinst
         wc.lpszClassName = "BotDesktopPet"
         user32.RegisterClassExW(ctypes.byref(wc))
-        ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-        self._hwnd = user32.CreateWindowExW(ex, "BotDesktopPet", "BOT", WS_POPUP, self.x, self.y,
+        # Not click-through any more (so you can grab BOT). Layered windows only catch the mouse
+        # on visible pixels, so clicks around BOT still reach whatever is underneath.
+        ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        self._hwnd = user32.CreateWindowExW(ex, "BotDesktopPet", "BOT", WS_POPUP, int(self.x), int(self.y),
                                             self.W, self.H, None, None, hinst, None)
         if not self._hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
@@ -177,7 +354,13 @@ class Pet:
             st["ant_v"] += 10
         st["was_busy"] = busy
 
-        if st["react"] and now < st["react_until"]:
+        if self.dragging:
+            mood = "surprised"      # whoa, I'm being carried!
+        elif now < self._dizzy_until:
+            mood = "dizzy"          # you threw me!
+        elif self.flying and abs(self.vx) + abs(self.vy) > 600:
+            mood = "surprised"
+        elif st["react"] and now < st["react_until"]:
             mood = st["react"]
         elif busy:
             mood = "working"
@@ -231,10 +414,7 @@ class Pet:
             p[5] -= 1 / 12
         st["particles"] = [p for p in st["particles"] if p[5] > 0]
 
-        # fade when your mouse comes near, so you can see what's underneath
-        rx, ry = win_input.cursor_pos()
-        near = self.x - 30 < rx < self.x + self.W + 30 and self.y - 30 < ry < self.y + self.H + 30
-        target_alpha = 0 if not self.wanted else (70 if near else 255)
+        target_alpha = 255 if self.wanted else 0
         self._alpha += (target_alpha - self._alpha) * 0.35
         if abs(target_alpha - self._alpha) < 3:
             self._alpha = float(target_alpha)
@@ -244,12 +424,16 @@ class Pet:
             openness = 0.1
         openness *= 1 - blink
         bob = math.sin(t * 9) * 0.03 if mood in ("excited", "happy") else 0.0
-        active = bool(st["particles"]) or blink > 0 or mood in ("excited", "happy", "love", "working", "sweaty") \
+        active = bool(st["particles"]) or blink > 0 or mood in ("excited", "happy", "love", "working", "sweaty",
+                                                                "dizzy", "surprised") \
             or abs(target_alpha - self._alpha) > 0 or abs(st["ant_v"]) > 0.05 or yawning
+        if self.flying or self.dragging:
+            st["ant_v"] += (self.vx + self.vy) * 0.00004  # antenna wobbles in the air
         sig = (mood, round(openness, 1), round(st["look"][0] * 6), round(st["look"][1] * 6), yawning,
                round(bob * 100), round(st["ant"] * 20), int(self._alpha),
                tuple((p[0], round(p[1] * 40), round(p[2] * 40)) for p in st["particles"]),
-               (int(t * 2) if mood == "sweaty" else 0), self._color)
+               (int(t * 2) if mood == "sweaty" else 0), (int(t * 12) if mood == "dizzy" else 0),
+               round(self.angle), round(self.squish * 10), self._color)
         return {"mood": mood, "open": openness, "look": st["look"], "yawn": yawning, "bob": bob,
                 "ant": st["ant"], "alpha": self._alpha, "sig": sig, "active": active, "t": t,
                 "particles": list(st["particles"])}
@@ -301,7 +485,17 @@ class Pet:
         ew, eh = sw * 0.19, sh * 0.45
         for side in (-1, 1):
             ex, ey = scx + side * sw * 0.21 + lx, scy - sh * 0.08 + ly
-            if mood in ("happy", "excited") and mood == "excited" and st:
+            if mood == "dizzy":  # spinning spiral eyes
+                ex, ey = scx + side * sw * 0.21, scy - sh * 0.08
+                spin = p["t"] * 7 * side
+                pts = [(ex + math.cos(spin + a / 5) * ew * 0.8 * a / 36, ey + math.sin(spin + a / 5) * ew * 0.8 * a / 36)
+                       for a in range(37)]
+                d.line(pts, fill=light + (255,), width=int(3 * SS), joint="curve")
+            elif mood == "surprised":  # big round eyes
+                r = ew * 0.62
+                d.ellipse((ex - r, ey - r * 1.15, ex + r, ey + r * 1.15), fill=light + (255,))
+                d.ellipse((ex - r * 0.5, ey - r * 0.7, ex - r * 0.05, ey - r * 0.25), fill=(255, 255, 255, 240))
+            elif mood == "excited":
                 d.polygon(_star(ex, ey, ew * 0.75), fill=(255, 226, 122, 255))
             elif mood == "love":
                 d.polygon(_heart(ex, ey, ew * 0.7), fill=PINK + (255,))
@@ -338,7 +532,11 @@ class Pet:
                       outline=light + (255,), width=2 * SS)
         elif mood in ("worried", "sad"):
             d.arc((mx - mw / 2, my, mx + mw / 2, my + sh * 0.18), 200, 340, fill=light + (255,), width=int(2.5 * SS))
-        elif mood in ("excited", "happy", "surprised"):
+        elif mood in ("surprised", "dizzy"):  # "o" mouth
+            r = mw * (0.22 if mood == "surprised" else 0.14)
+            d.ellipse((mx - r, my - r * 0.6, mx + r, my + r * 1.3), fill=(10, 35, 80, 255),
+                      outline=light + (255,), width=2 * SS)
+        elif mood in ("excited", "happy"):
             d.chord((mx - mw / 2, my - sh * 0.08, mx + mw / 2, my + sh * 0.14), 0, 180, fill=(14, 42, 92, 255),
                     outline=light + (255,), width=2 * SS)
         elif mood == "asleep":
@@ -347,6 +545,12 @@ class Pet:
             q = mw * 0.25
             d.arc((mx - 2 * q, my - q, mx, my + q), 0, 180, fill=light + (255,), width=int(2.5 * SS))
             d.arc((mx, my - q, mx + 2 * q, my + q), 0, 180, fill=light + (255,), width=int(2.5 * SS))
+        # stars circling the head when dizzy
+        if mood == "dizzy":
+            for i in range(3):
+                a = p["t"] * 4 + i * 2 * math.pi / 3
+                sx, sy = cx + math.cos(a) * hw * 0.5, top - hh * 0.02 + math.sin(a) * hh * 0.12
+                d.polygon(_star(sx, sy, 7 * SS), fill=(255, 226, 122, 255))
         # sweat drop
         if mood == "sweaty":
             sx = box[2] - hw * 0.05
@@ -387,7 +591,7 @@ class Pet:
         try:
             ctypes.memmove(bits, data, len(data))
             old = gdi32.SelectObject(mem, hbmp)
-            dst, size, src = wt.POINT(self.x, self.y), wt.SIZE(self.W, self.H), wt.POINT(0, 0)
+            dst, size, src = wt.POINT(int(round(self.x)), int(round(self.y))), wt.SIZE(self.W, self.H), wt.POINT(0, 0)
             blend = BLENDFUNCTION(0, 0, max(0, min(255, int(alpha))), AC_SRC_ALPHA)
             user32.UpdateLayeredWindow(self._hwnd, screen, ctypes.byref(dst), ctypes.byref(size), mem,
                                        ctypes.byref(src), 0, ctypes.byref(blend), ULW_ALPHA)
