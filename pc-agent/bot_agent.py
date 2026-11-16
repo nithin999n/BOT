@@ -35,9 +35,11 @@ import ai_agent
 import matcher
 import pyperclip
 
+import autostart
 import health
 import router
 import routines
+import tray as tray_mod
 from desktop_pet import PET
 import screen
 import security
@@ -116,12 +118,21 @@ def save_config() -> None:
     CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
 
 
+TRAY = None  # the icon in the Windows system tray
+
+
+def tray_refresh() -> None:
+    if TRAY is not None:
+        TRAY.refresh()
+
+
 def set_pet(on: bool) -> None:
     """Show/hide the little BOT on the PC desktop and remember it."""
     PET.set_wanted(on)
     if CFG.get("desktop_pet") != on:
         CFG["desktop_pet"] = on
         save_config()
+    tray_refresh()
 
 
 def set_bubble(on: bool) -> None:
@@ -131,6 +142,7 @@ def set_bubble(on: bool) -> None:
         CFG["bubble_cursor"] = on
         save_config()
     log.info("Bubble cursor %s", "on" if on else "off")
+    tray_refresh()
 
 
 _net = {"mac": "", "broadcast": ""}  # for Wake-on-LAN from the phone
@@ -693,6 +705,7 @@ async def dispatch(sess: Session, msg: dict) -> None:
             CFG["style"] = {"name": name, "color": color}
             save_config()
             apply_style()
+            tray_refresh()
             BUBBLE.pop(f"Hi, I'm {name}!", hold=2.5)
     elif kind == "clip_set":  # phone clipboard -> PC clipboard
         text = str(msg.get("text", ""))[:200_000]
@@ -726,6 +739,7 @@ async def dispatch(sess: Session, msg: dict) -> None:
         save_config()
         if CFG["walkaway"]["enabled"]:
             _presence["armed"] = sess.lan
+        tray_refresh()
         await send(sess.ws, type="walkaway", **CFG["walkaway"])
         await send(sess.ws, type="result", ok=True,
                    message=("Walk-away lock is ON: I'll lock the PC "
@@ -922,9 +936,59 @@ async def main() -> int:
     show(f"\n{line}\n  BOT is running on {socket.gethostname()}")
     show(f"  IP address : {ip}\n  Port       : {port}\n  PIN        : {cfg['pin']}")
     show(f"  The app finds this PC automatically; just enter the PIN.\n  Press Ctrl+C to stop.\n{line}\n")
+    # ---- system tray icon --------------------------------------------------------------
+    global TRAY
+    stop_bot = loop.create_future()
+
+    def from_tray(coro_fn):  # run something on BOT's main loop from the tray thread
+        return lambda: asyncio.run_coroutine_threadsafe(coro_fn(), loop)
+
+    async def tray_toggle_pet():
+        set_pet(not PET.wanted)
+        await broadcast(type="pet", on=PET.wanted)
+
+    async def tray_toggle_bubble():
+        set_bubble(not BUBBLE.wanted)
+        await broadcast(type="bubble", on=BUBBLE.wanted)
+
+    async def tray_toggle_walkaway():
+        wa = dict(CFG.get("walkaway", {"minutes": 1}))
+        wa["enabled"] = not wa.get("enabled")
+        CFG["walkaway"] = wa
+        save_config()
+        _presence["armed"] = wa["enabled"] and phone_nearby()
+        tray_refresh()
+        await broadcast(type="walkaway", **wa)
+
+    def tray_set_autostart():
+        if autostart.LAUNCHER.exists():
+            autostart.remove_launcher()
+        else:
+            autostart.write_launcher()
+
+    def tray_quit():
+        log.info("Quit from the tray")
+        PET.set_wanted(False)
+        loop.call_soon_threadsafe(lambda: stop_bot.done() or stop_bot.set_result(None))
+
+    def tray_bring():
+        PET.bring_here()
+        if not CFG.get("desktop_pet", True):
+            set_pet(True)
+            asyncio.run_coroutine_threadsafe(broadcast(type="pet", on=True), loop)
+
+    TRAY = tray_mod.Tray(
+        pet=PET, bubble=BUBBLE, cfg=CFG,
+        toggle_pet=from_tray(tray_toggle_pet), toggle_bubble=from_tray(tray_toggle_bubble),
+        toggle_walkaway=from_tray(tray_toggle_walkaway), bring_pet=tray_bring,
+        autostart_on=lambda: autostart.LAUNCHER.exists(), set_autostart=tray_set_autostart,
+        open_files=lambda: tray_mod.open_folder(str(DOWNLOADS)), quit_bot=tray_quit)
+    TRAY.start()
+
     try:
-        await asyncio.Future()
+        await stop_bot
     finally:
+        TRAY.stop()
         for job in jobs:
             job.cancel()
         server.close()

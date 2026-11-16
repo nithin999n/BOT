@@ -108,7 +108,8 @@ def vbs_quote(s: str) -> str:
     return '"' + s.replace('"', '""') + '"'
 
 
-def on() -> None:
+def write_launcher() -> None:
+    """Start BOT (hidden) every time you log in to Windows."""
     STARTUP_DIR.mkdir(parents=True, exist_ok=True)
     cmd = f'"{python_exe()}" "{AGENT}"'
     script = (
@@ -117,6 +118,14 @@ def on() -> None:
         f"sh.Run {vbs_quote(cmd)}, 0, False\r\n"
     )
     LAUNCHER.write_text(script, encoding="utf-16")  # UTF-16 so any folder name works
+
+
+def remove_launcher() -> None:
+    LAUNCHER.unlink(missing_ok=True)
+
+
+def on() -> None:
+    write_launcher()
     print(f"BOT will now start automatically when you log in.\n  ({LAUNCHER})")
     start_now()
     status()

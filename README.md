@@ -82,6 +82,13 @@ Moving the mouse into a screen corner stops any running mouse or keyboard action
 - **Phone ⇄ PC:** ⋮ → **Send files & clipboard**. Photos and files land in `Downloads\BOT`.
   The clipboard works both ways ("My clipboard → PC", "PC clipboard → me").
 
+## BOT in the system tray
+
+Look in the **^** area next to the clock (drag the icon onto the taskbar to keep it visible).
+- **Left-click** the BOT icon to show or hide the desktop BOT.
+- **Right-click** for: Bring BOT here (it drops in above your mouse) · Desktop BOT · BOT cursor · Walk-away lock ·
+  Start with Windows · Show PIN · Open received files · **Quit BOT**.
+
 ## BOT on your PC desktop, controllers, health & safety
 
 - **Desktop BOT:** a little living BOT sits in the bottom-right corner of your PC. **Grab it and throw it!** It flies, spins and bounces, and if you throw it hard it gets dizzy 😵 (the BOT on your phone too). Click it for a giggle. When idle, it goes for little walks.

@@ -102,6 +102,11 @@ class Pet:
         h = hex_color.lstrip("#")
         self._q.put(("color", tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))))
 
+    def bring_here(self) -> None:
+        """Drop BOT in from the top of the screen, above your mouse."""
+        self.wanted = True
+        self._q.put(("bring",))
+
     def react(self, mood: str, seconds: float = 2.0) -> None:
         """Show a mood for a moment: happy, excited, sad, love, surprised."""
         self._q.put(("react", mood, seconds))
@@ -268,6 +273,15 @@ class Pet:
                     elif cmd[0] == "react":
                         st["react"], st["react_until"] = cmd[1], time.perf_counter() + cmd[2]
                         st["ant_v"] += 9
+                    elif cmd[0] == "bring":
+                        mx, _my = win_input.cursor_pos()
+                        lo, hi = self.bounds[0], self.bounds[2] - self.W
+                        self.x = float(max(lo, min(hi, mx - self.W / 2)))
+                        self.y = float(self.bounds[1] - self.H * 0.5)
+                        self.vx, self.vy, self.spin = 0.0, 300.0, 0.0
+                        self.dragging = self.walking = False
+                        self.flying = True
+                        st["react"], st["react_until"] = "happy", time.perf_counter() + 2.5
             except queue.Empty:
                 pass
             try:
