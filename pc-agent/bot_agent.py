@@ -34,6 +34,7 @@ import matcher
 import router
 import screen
 import security
+import smart
 from overlay import BUBBLE
 
 HERE = Path(__file__).resolve().parent
@@ -201,6 +202,8 @@ class Session:
         self.screen_quality = None
         if AGENT.busy and AGENT.owner is self:  # phone went away: don't keep acting on the PC
             AGENT.stop()
+        if smart.RUNNER.busy and smart.RUNNER.owner is self:
+            smart.RUNNER.stop()
         for item in self.pending.values():
             fut = item.get("future")
             if fut is not None and not fut.done():
@@ -304,15 +307,25 @@ async def handle_command(sess: Session, msg: dict) -> None:
     if not text:
         return
     log.info("Heard [%s]: %s", lang, text)
-    if AGENT.busy:
+    if AGENT.busy or smart.RUNNER.busy:
         if router.is_stop(text):
             AGENT.stop()
+            smart.RUNNER.stop()
             await send(sess.ws, type="result", ok=True, message="Stopping…", heard=text)
         else:
             await send(sess.ws, type="result", ok=False, heard=text,
                        message="I'm still working on the last task. Say \"stop\" to cancel it.")
         return
-    m = matcher.match(text)
+    p = smart.plan(text)
+    m = p.steps[0] if p and p.is_single_builtin else None
+    if p and not p.is_single_builtin:
+        if any(isinstance(s, matcher.Match) and s.needs_confirm for s in p.steps):
+            await send(sess.ws, type="result", ok=False, heard=text,
+                       message="Please say shutdown / restart / sleep on its own, not in a chain.")
+            return
+        log.info("  -> smart plan: %s", p.steps)
+        asyncio.create_task(run_smart(sess, text, lang, p))
+        return
     if m is not None and (not AGENT.available or router.prefer_builtin(text, m)):
         log.info("  -> %s %s", m.intent, m.target or m.arg)
         if m.needs_confirm:
@@ -331,16 +344,52 @@ async def handle_command(sess: Session, msg: dict) -> None:
     record_unmatched(text, lang)
     log.info("  -> not understood")
     await send(sess.ws, type="result", ok=False, heard=text,
-               message=f"Sorry, I don't know \"{text}\" yet. To let me do any task you ask, "
-                       "add an Anthropic API key on the PC (run set_api_key.bat).")
+               message=f"Sorry, I don't know \"{text}\" yet. Tip: say \"click <word>\" to click anything "
+                       "on the screen, and join steps with \"and\".")
+
+
+async def run_smart(sess: Session, text: str, lang: str, p: "smart.Plan") -> None:
+    """Free smart mode: click-by-name and chains. Falls back to the AI (if set up) when stuck."""
+    loop = asyncio.get_running_loop()
+    try:
+        if security.is_sensitive(text) and any(isinstance(s, smart.ClickStep) for s in p.steps):
+            ok = await ask_safety_word(sess, f"This may delete, send or share something:\n“{text}”\n\n"
+                                             "Say or type your safety word to continue.")
+            if not ok:
+                await send(sess.ws, type="result", ok=False, heard=text, busy=False,
+                           message=cancelled_msg())
+                return
+
+        def progress(message: str) -> None:
+            asyncio.run_coroutine_threadsafe(_send_quietly(sess.ws, type="progress", message=message), loop)
+
+        await send(sess.ws, type="progress", message="On it…", busy=True)
+        ok, message = await asyncio.to_thread(smart.RUNNER.run, p, progress, sess)
+        log.info("  -> smart %s: %s", "ok" if ok else "FAILED", message)
+        if not ok and AGENT.available and "couldn't find" in message:
+            await send(sess.ws, type="progress", message="Couldn't find it myself, asking the AI…", busy=True)
+            await run_ai(sess, text, lang, safety_checked=True)
+            return
+        await send(sess.ws, type="result", ok=ok, message=message, heard=text, busy=False)
+    except websockets.ConnectionClosed:
+        pass
+    except Exception:
+        log.exception("Smart task crashed")
+        await _send_quietly(sess.ws, type="result", ok=False, heard=text, busy=False,
+                            message="Something went wrong with that task (see bot.log).")
+
+
+NO_WORD_MSG = "This needs your safety word, but you haven't set one yet. Set it in the app: ⋮ menu → Set safety word."
+
+
+def cancelled_msg() -> str:
+    return "Cancelled: safety word not confirmed." if security.is_set(CFG) else NO_WORD_MSG
 
 
 async def ask_safety_word(sess: Session, message: str) -> bool:
     """Ask the phone for the safety word; True only if the right word comes back."""
     if not security.is_set(CFG):
-        await send(sess.ws, type="result", ok=False,
-                   message="This needs your safety word, but you haven't set one yet. "
-                           "Set it in the app: ⋮ menu → Safety word.")
+        await send(sess.ws, type="progress", message=NO_WORD_MSG)
         return False
     fut = asyncio.get_running_loop().create_future()
     cid = uuid.uuid4().hex
@@ -354,15 +403,15 @@ async def ask_safety_word(sess: Session, message: str) -> bool:
         sess.pending.pop(cid, None)
 
 
-async def run_ai(sess: Session, text: str, lang: str) -> None:
+async def run_ai(sess: Session, text: str, lang: str, safety_checked: bool = False) -> None:
     loop = asyncio.get_running_loop()
     try:
-        if security.is_sensitive(text):
+        if security.is_sensitive(text) and not safety_checked:
             ok = await ask_safety_word(sess, f"This task may delete, send or share something:\n“{text}”\n\n"
                                              "Say or type your safety word to continue.")
             if not ok:
                 await send(sess.ws, type="result", ok=False, heard=text, busy=False,
-                           message="Cancelled: safety word not confirmed.")
+                           message=cancelled_msg())
                 return
 
         def progress(message: str) -> None:
@@ -451,8 +500,8 @@ async def dispatch(sess: Session, msg: dict) -> None:
         set_bubble(bool(msg.get("on")))
         await send(sess.ws, type="bubble", on=BUBBLE.wanted)
     elif kind == "stop":
-        if AGENT.busy:
-            AGENT.stop()
+        AGENT.stop()
+        smart.RUNNER.stop()
     elif kind == "set_keyword":
         if sess.bad_old_words >= 5:
             await send(sess.ws, type="keyword_status", ok=False, set=security.is_set(CFG),
@@ -511,7 +560,7 @@ def make_handler(cfg: dict):
 
         log.info("Phone connected from %s", ip)
         await send(ws, type="welcome", pc=socket.gethostname(), tailscale=_tailscale_ip,
-                   bubble=BUBBLE.wanted, ai=AGENT.available, busy=AGENT.busy,
+                   bubble=BUBBLE.wanted, ai=AGENT.available, busy=AGENT.busy or smart.RUNNER.busy,
                    keyword_set=security.is_set(CFG),
                    features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword"])
         sess = Session(ws)

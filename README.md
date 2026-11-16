@@ -69,7 +69,21 @@ Moving the mouse into a screen corner stops any running mouse or keyboard action
 - **Touchpad:** the phone becomes a touchpad and keyboard. Move with 1 finger, tap to click, scroll with 2 fingers,
   and 2-finger tap to right-click.
 
-## "Do anything" tasks (AI brain)
+## Smart mode: click anything & chain steps (free, offline)
+
+BOT reads the words on your screen with Windows' built-in text reader (OCR), so you can click **anything that has a name**:
+
+| Say | What happens |
+|---|---|
+| "select Gmail" · "click Sign in" · "जीमेल पर क्लिक करो" · "Gmail ಮೇಲೆ ಕ್ಲಿಕ್ ಮಾಡು" · "Gmail పై క్లిక్ చేయి" | finds the word, then the bubble glides there and clicks |
+| "go to the **top right** and select Gmail" · "click Gmail at the bottom left" | picks the match in that area (top / bottom / left / right / corners / middle) |
+| "double click Recycle Bin" · "right click Downloads" | double / right click |
+| "open chrome **and** go to gmail **and** click compose" | runs the steps one after another (also *then*, और, फिर, ಮತ್ತು, ನಂತರ, మరియు …) |
+
+If the word isn't on screen yet (a page still loading), BOT keeps looking for up to 8 seconds.
+Icons without text can't be clicked by name. Use the **Screen** page and tap them instead.
+
+## "Do anything" tasks (optional paid AI brain)
 
 Built-in commands, like "open chrome", run instantly and for free. For **anything else**, such as
 "go to the top right and select Gmail" or "open my Downloads folder and sort by date",

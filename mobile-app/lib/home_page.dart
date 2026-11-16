@@ -28,10 +28,15 @@ const languages = <Lang>[
 ];
 
 const examples = <String, List<String>>{
-  'Anything (needs AI key on PC)': [
+  'Click anything & chain steps (free)': [
     'go to the top right and select Gmail',
-    'open my Downloads folder and sort by date',
-    'find the weather in Bangalore and open the first result',
+    'open chrome and go to gmail and click compose',
+    'click Sign in',
+    'double click Recycle Bin',
+    'open youtube and search lofi songs',
+    'जीमेल पर क्लिक करो',
+    'Gmail ಮೇಲೆ ಕ್ಲಿಕ್ ಮಾಡು',
+    'Gmail పై క్లిక్ చేయి',
   ],
   'English': ['open chrome', 'volume up', 'search cricket score', 'play arijit singh on youtube', 'battery'],
   'हिंदी': ['क्रोम खोलो', 'आवाज़ बढ़ाओ', 'गूगल पर मौसम सर्च करो', 'बैटरी कितनी है', 'कर्सर बंद करो'],
