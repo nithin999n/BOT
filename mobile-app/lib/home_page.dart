@@ -4,15 +4,14 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:speech_to_text/speech_recognition_error.dart';
-import 'package:speech_to_text/speech_recognition_result.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 
 import 'connection.dart';
 import 'face.dart';
+import 'safety_word.dart';
 import 'screen_page.dart';
 import 'settings_dialog.dart';
 import 'touchpad_page.dart';
+import 'voice.dart';
 
 class Lang {
   const Lang(this.code, this.locale, this.label);
@@ -29,15 +28,12 @@ const languages = <Lang>[
 ];
 
 const examples = <String, List<String>>{
-  'English': [
-    'open chrome',
-    'volume up',
-    'search weather in bangalore',
-    'play arijit singh on youtube',
-    'battery',
-    'hide the cursor',
-    'lock the computer',
+  'Anything (needs AI key on PC)': [
+    'go to the top right and select Gmail',
+    'open my Downloads folder and sort by date',
+    'find the weather in Bangalore and open the first result',
   ],
+  'English': ['open chrome', 'volume up', 'search cricket score', 'play arijit singh on youtube', 'battery'],
   'हिंदी': ['क्रोम खोलो', 'आवाज़ बढ़ाओ', 'गूगल पर मौसम सर्च करो', 'बैटरी कितनी है', 'कर्सर बंद करो'],
   'ಕನ್ನಡ': ['ಕ್ರೋಮ್ ತೆರೆ', 'ವಾಲ್ಯೂಮ್ ಹೆಚ್ಚಿಸು', 'ಯೂಟ್ಯೂಬ್ ತೆರೆ', 'ಸ್ಕ್ರೀನ್‌ಶಾಟ್', 'ಕರ್ಸರ್ ಆಫ್ ಮಾಡು'],
   'తెలుగు': ['క్రోమ్ ఓపెన్ చేయి', 'సౌండ్ పెంచు', 'గూగుల్ లో వాతావరణం వెతుకు', 'లాక్ చేయి', 'కర్సర్ ఆఫ్ చేయి'],
@@ -61,16 +57,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final BotConnection conn = BotConnection();
+  final Voice voice = Voice();
   StreamSubscription<BotEvent>? _eventSub;
-
-  // Speech
-  final SpeechToText _speech = SpeechToText();
-  bool _speechReady = false;
-  bool _listening = false;
-  bool _sentThisTurn = true;
-  String _heard = '';
-  double _level = 0;
-  Timer? _sendTimer;
 
   // Face
   Mood? _flash; // short-lived expression (tap, result…)
@@ -81,32 +69,49 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _fingerDown = false;
   bool _holdFired = false;
   String _bubbleText = '';
+  String _progress = '';
+  bool _askedForKeyword = false;
   final _rnd = math.Random();
 
   int _lang = 0;
   final List<LogEntry> _log = [];
   final TextEditingController _input = TextEditingController();
 
+  String get _locale => languages[_lang].locale;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    conn.addListener(_onConn);
+    conn.addListener(_onChange);
+    voice.addListener(_onChange);
+    voice.onProblem = (m) {
+      _say(m);
+      _flashMood(Mood.confused);
+    };
     _eventSub = conn.events.listen(_onEvent);
     _init();
-    _initSpeech();
+    voice.init().then((ok) {
+      if (!ok) {
+        _addLog(
+            'Voice is not available (microphone permission denied or no Google speech service). '
+            'You can still type commands below.',
+            ok: false);
+      }
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    conn.removeListener(_onConn);
+    conn.removeListener(_onChange);
+    voice.removeListener(_onChange);
     _eventSub?.cancel();
-    for (final t in [_sendTimer, _flashTimer, _waitTimer, _holdTimer]) {
+    for (final t in [_flashTimer, _waitTimer, _holdTimer]) {
       t?.cancel();
     }
-    _speech.cancel();
     _input.dispose();
+    voice.dispose();
     conn.dispose();
     super.dispose();
   }
@@ -134,17 +139,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  void _onConn() {
+  void _onChange() {
     if (mounted) setState(() {});
   }
 
   // ------------------------------------------------------------------ mood
 
   Mood get _mood {
-    if (_listening) return Mood.listening;
+    if (voice.listening) return Mood.listening;
     final flash = _flash;
     if (flash != null) return flash;
-    if (_waiting) return Mood.thinking;
+    if (_waiting || conn.busy) return Mood.thinking;
     return switch (conn.link) {
       Link.offline => Mood.sleepy,
       Link.connecting => Mood.thinking,
@@ -167,11 +172,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   String get _caption {
-    if (_listening) return _heard.isEmpty ? 'Listening…' : _heard;
+    if (voice.listening) return voice.heard.isEmpty ? 'Listening…' : voice.heard;
+    if ((_waiting || conn.busy) && _progress.isNotEmpty) return _progress;
     if (_waiting) return 'On it…';
     if (_bubbleText.isNotEmpty) return _bubbleText;
     return switch (conn.link) {
-      Link.offline => conn.configured ? 'Zzz… PC is offline' : 'Tap ⚙ to connect your PC',
+      Link.offline => conn.configured ? 'Zzz… PC is offline' : 'Tap ⋮ → Connection settings',
       Link.connecting => 'Waking up…',
       Link.online => 'Hold me to talk · tap me to play',
     };
@@ -185,6 +191,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case 'welcome':
         _addLog(e.message);
         _flashMood(Mood.happy);
+        if (!conn.keywordSet && !_askedForKeyword) {
+          _askedForKeyword = true;
+          Future.delayed(const Duration(milliseconds: 600), () {
+            if (mounted && conn.online && !conn.keywordSet) setSafetyWord(context, conn, firstTime: true);
+          });
+        }
+      case 'progress':
+        setState(() {
+          _waiting = true;
+          _progress = e.message;
+        });
+        _waitTimer?.cancel();
+        _waitTimer = Timer(const Duration(seconds: 90), _stopWaiting);
       case 'result':
         _stopWaiting();
         _addLog(e.message, ok: e.ok);
@@ -192,9 +211,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _flashMood(e.ok ? Mood.happy : Mood.sad, const Duration(seconds: 2));
         HapticFeedback.lightImpact();
       case 'confirm':
-        _stopWaiting();
         _flashMood(Mood.surprised, const Duration(seconds: 3));
-        _askConfirm(e.id, e.message);
+        if (e.keyword) {
+          _confirmWithSafetyWord(e.id, e.message);
+        } else {
+          _stopWaiting();
+          _askYesNo(e.id, e.message);
+        }
+      case 'keyword_status':
+        _addLog(e.message, ok: e.ok);
+        _say(e.message);
+        _flashMood(e.ok ? Mood.happy : Mood.sad);
       case 'error':
         _stopWaiting();
         _addLog(e.message, ok: false);
@@ -205,18 +232,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   void _say(String text) {
+    if (!mounted) return;
     setState(() => _bubbleText = text);
-    Timer(const Duration(seconds: 4), () {
+    Timer(const Duration(seconds: 5), () {
       if (mounted && _bubbleText == text) setState(() => _bubbleText = '');
     });
   }
 
   void _stopWaiting() {
     _waitTimer?.cancel();
-    if (_waiting) setState(() => _waiting = false);
+    if (_waiting || _progress.isNotEmpty) {
+      setState(() {
+        _waiting = false;
+        _progress = '';
+      });
+    }
   }
 
-  Future<void> _askConfirm(String id, String message) async {
+  Future<void> _askYesNo(String id, String message) async {
     HapticFeedback.heavyImpact();
     final yes = await showDialog<bool>(
       context: context,
@@ -232,6 +265,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     conn.send({'type': 'confirm_reply', 'id': id, 'yes': yes == true});
   }
 
+  Future<void> _confirmWithSafetyWord(String id, String message) async {
+    final word = await askSafetyWord(context, voice: voice, locale: _locale, message: message);
+    conn.send({
+      'type': 'confirm_reply',
+      'id': id,
+      'yes': word != null && word.isNotEmpty,
+      'keyword': word ?? '',
+    });
+  }
+
   void _sendCommand(String text) {
     _addLog(text, mine: true);
     if (!conn.online) {
@@ -240,9 +283,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
     conn.send({'type': 'command', 'text': text, 'lang': languages[_lang].code});
-    setState(() => _waiting = true);
+    setState(() {
+      _waiting = true;
+      _progress = '';
+    });
     _waitTimer?.cancel();
-    _waitTimer = Timer(const Duration(seconds: 12), _stopWaiting);
+    _waitTimer = Timer(const Duration(seconds: 15), _stopWaiting);
   }
 
   void _sendTyped() {
@@ -284,109 +330,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await prefs.setInt('lang', i);
   }
 
-  // ---------------------------------------------------------------- speech
-
-  Future<void> _initSpeech() async {
-    bool ok = false;
-    try {
-      ok = await _speech.initialize(onStatus: _onSpeechStatus, onError: _onSpeechError);
-    } catch (_) {
-      ok = false;
-    }
-    if (!mounted) return;
-    setState(() => _speechReady = ok);
-    if (!ok) {
-      _addLog(
-          'Voice is not available (microphone permission denied or no Google speech service). '
-          'You can still type commands below.',
-          ok: false);
-    }
-  }
-
-  void _onSpeechStatus(String status) {
-    if (!mounted) return;
-    if (status == 'done' || status == 'notListening') {
-      setState(() => _listening = false);
-      _scheduleSend();
-    }
-  }
-
-  void _onSpeechError(SpeechRecognitionError e) {
-    if (!mounted) return;
-    setState(() => _listening = false);
-    if (_heard.trim().isNotEmpty) {
-      _scheduleSend();
-    } else if (e.errorMsg == 'error_no_match' || e.errorMsg == 'error_speech_timeout') {
-      _say("Didn't catch that. Hold me and speak again.");
-      _flashMood(Mood.confused);
-    } else {
-      _addLog('Mic error: ${e.errorMsg}', ok: false);
-    }
-  }
-
-  void _onSpeechResult(SpeechRecognitionResult r) {
-    if (!mounted) return;
-    setState(() => _heard = r.recognizedWords);
-    if (r.finalResult) _sendHeard();
-  }
-
-  Future<void> _startListening() async {
-    if (!_speechReady) {
-      _say('Voice is not available. Type the command below.');
-      return;
-    }
-    HapticFeedback.mediumImpact();
-    _sendTimer?.cancel();
-    setState(() {
-      _listening = true;
-      _heard = '';
-      _level = 0;
-      _sentThisTurn = false;
-    });
-    try {
-      await _speech.listen(
-        onResult: _onSpeechResult,
-        localeId: languages[_lang].locale,
-        listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 4),
-        onSoundLevelChange: (l) {
-          // Android reports roughly -2..10 dB
-          if (mounted) setState(() => _level = ((l + 2) / 12).clamp(0.0, 1.0));
-        },
-        listenOptions: SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: true,
-          listenMode: ListenMode.dictation,
-        ),
-      );
-    } catch (e) {
-      if (mounted) setState(() => _listening = false);
-      _addLog('Could not start the mic: $e', ok: false);
-    }
-  }
-
-  Future<void> _stopListening() async {
-    if (!_listening) return;
-    setState(() => _listening = false);
-    await _speech.stop();
-    _scheduleSend();
-  }
-
-  void _scheduleSend() {
-    if (_sentThisTurn) return;
-    _sendTimer?.cancel();
-    _sendTimer = Timer(const Duration(milliseconds: 1200), _sendHeard);
-  }
-
-  void _sendHeard() {
-    if (_sentThisTurn) return;
-    final t = _heard.trim();
-    if (t.isEmpty) return;
-    _sentThisTurn = true;
-    _sendTimer?.cancel();
-    _sendCommand(t);
-  }
-
   // Face: short tap = expression, hold = talk.
   void _faceDown(PointerDownEvent _) {
     _fingerDown = true;
@@ -395,7 +338,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _holdTimer = Timer(const Duration(milliseconds: 220), () {
       if (_fingerDown) {
         _holdFired = true;
-        _startListening();
+        HapticFeedback.mediumImpact();
+        voice.start(_locale, _sendCommand);
       }
     });
   }
@@ -404,8 +348,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!_fingerDown) return;
     _fingerDown = false;
     _holdTimer?.cancel();
-    if (_listening) {
-      _stopListening();
+    if (voice.listening) {
+      voice.stop();
     } else if (!_holdFired) {
       _tapFace();
     }
@@ -446,7 +390,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
             ],
             const SizedBox(height: 16),
-            const Text('On the PC: move your mouse or press Esc while the blue bubble is moving to cancel it.'),
+            const Text('To stop BOT: tap Stop, say "stop", or on the PC move the mouse or press Esc.'),
           ],
         ),
       ),
@@ -495,32 +439,47 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           mood: _mood,
           look: c == null ? null : Offset(c.vx * 2 - 1, c.vy * 2 - 1),
           lookStamp: c?.at,
-          level: _listening ? _level : 0,
+          level: voice.listening ? voice.level : 0,
           size: size,
         ),
       ),
     );
   }
 
-  Widget _captionBubble(ColorScheme cs) {
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 200),
-      child: Container(
-        key: ValueKey(_caption),
-        constraints: const BoxConstraints(maxWidth: 320),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF111B3A),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: botBlue.withAlpha(_listening ? 230 : 90)),
+  Widget _captionBubble() {
+    final listening = voice.listening;
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: Container(
+          key: ValueKey(_caption),
+          constraints: const BoxConstraints(maxWidth: 320),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF111B3A),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: botBlue.withAlpha(listening ? 230 : 90)),
+          ),
+          child: Text(_caption,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: listening ? botLight : Colors.white70, fontSize: 15)),
         ),
-        child: Text(_caption,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: _listening ? botLight : Colors.white70, fontSize: 15)),
       ),
-    );
+      if (conn.busy)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: FilledButton.tonalIcon(
+            onPressed: () {
+              HapticFeedback.mediumImpact();
+              conn.stopTask();
+            },
+            icon: const Icon(Icons.stop_circle_outlined),
+            label: const Text('Stop'),
+          ),
+        ),
+    ]);
   }
 
   void _open(Widget page) {
@@ -540,6 +499,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               switch (v) {
                 case 'bubble':
                   conn.setBubble(!conn.bubbleOn);
+                case 'keyword':
+                  setSafetyWord(context, conn);
                 case 'help':
                   _showHelp();
                 case 'settings':
@@ -553,6 +514,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 enabled: conn.online,
                 child: const Text('BOT cursor on PC'),
               ),
+              PopupMenuItem(
+                value: 'keyword',
+                enabled: conn.online,
+                child: Text(conn.keywordSet ? 'Change safety word' : 'Set safety word'),
+              ),
               const PopupMenuItem(value: 'help', child: Text('What can I say?')),
               const PopupMenuItem(value: 'settings', child: Text('Connection settings')),
             ],
@@ -562,82 +528,87 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       body: LayoutBuilder(builder: (context, box) {
         // While the keyboard is open, hide the face so the text box has room.
         final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
-        final faceSize = math.min(math.min(box.maxWidth * 0.66, box.maxHeight * 0.4), 270.0);
+        final faceSize = math.min(math.min(box.maxWidth * 0.62, box.maxHeight * 0.36), 260.0);
         return Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 2, 12, 2),
-            child: Wrap(
-              spacing: 8,
-              alignment: WrapAlignment.center,
-              children: [
-                for (var i = 0; i < languages.length; i++)
-                  ChoiceChip(
-                    label: Text(languages[i].label),
-                    selected: _lang == i,
-                    onSelected: (_) => _setLang(i),
-                  ),
-              ],
-            ),
-          ),
-          if (!keyboardOpen) ...[
-          _face(faceSize),
-          _captionBubble(cs),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(children: [
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  onPressed: () => _open(ScreenPage(conn: conn)),
-                  icon: const Icon(Icons.desktop_windows),
-                  label: const Text('Screen'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  onPressed: () => _open(TouchpadPage(conn: conn)),
-                  icon: const Icon(Icons.touch_app),
-                  label: const Text('Touchpad'),
-                ),
-              ),
-            ]),
-          ),
-          ],
-          Expanded(
-            child: ListView.builder(
-              reverse: true,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              itemCount: _log.length,
-              itemBuilder: (_, i) => _bubble(_log[i], cs),
-            ),
-          ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-              child: Row(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 12, 2),
+              child: Wrap(
+                spacing: 8,
+                alignment: WrapAlignment.center,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _sendTyped(),
-                      decoration: const InputDecoration(
-                        hintText: 'Or type a command…',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
+                  for (var i = 0; i < languages.length; i++)
+                    ChoiceChip(
+                      label: Text(languages[i].label),
+                      selected: _lang == i,
+                      onSelected: (_) => _setLang(i),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(onPressed: _sendTyped, icon: const Icon(Icons.send)),
                 ],
               ),
             ),
-          ),
-        ],
+            if (!keyboardOpen) ...[
+              _face(faceSize),
+              _captionBubble(),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(children: [
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: () => _open(ScreenPage(
+                        conn: conn,
+                        voice: voice,
+                        locale: _locale,
+                        onCommand: _sendCommand,
+                      )),
+                      icon: const Icon(Icons.desktop_windows),
+                      label: const Text('Screen'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: () => _open(TouchpadPage(conn: conn)),
+                      icon: const Icon(Icons.touch_app),
+                      label: const Text('Touchpad'),
+                    ),
+                  ),
+                ]),
+              ),
+            ],
+            Expanded(
+              child: ListView.builder(
+                reverse: true,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                itemCount: _log.length,
+                itemBuilder: (_, i) => _bubble(_log[i], cs),
+              ),
+            ),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _input,
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _sendTyped(),
+                        decoration: const InputDecoration(
+                          hintText: 'Or type a command…',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filled(onPressed: _sendTyped, icon: const Icon(Icons.send)),
+                  ],
+                ),
+              ),
+            ),
+          ],
         );
       }),
     );

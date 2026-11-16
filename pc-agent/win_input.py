@@ -61,3 +61,12 @@ def click(name: str = "left", double: bool = False) -> None:
 def scroll(notches: int) -> None:
     """Positive = scroll up, negative = scroll down."""
     user32.mouse_event(_WHEEL, 0, 0, int(notches) * 120, 0)
+
+
+def hscroll(notches: int) -> None:
+    """Positive = scroll right, negative = scroll left."""
+    user32.mouse_event(0x01000, 0, 0, int(notches) * 120, 0)
+
+
+def esc_pressed() -> bool:
+    return bool(user32.GetAsyncKeyState(0x1B) & 0x8000)

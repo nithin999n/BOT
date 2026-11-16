@@ -25,11 +25,12 @@ class ScreenInfo {
 }
 
 class BotEvent {
-  const BotEvent(this.type, this.message, {this.ok = true, this.id = ''});
-  final String type; // welcome, result, confirm, error, log, screen_error
+  const BotEvent(this.type, this.message, {this.ok = true, this.id = '', this.keyword = false});
+  final String type; // welcome, result, progress, confirm, error, log, screen_error, keyword_status
   final String message;
   final bool ok;
   final String id;
+  final bool keyword; // confirm: needs the safety word (not just yes/no)
 }
 
 double _d(Map<String, dynamic> m, String k) => (m[k] as num?)?.toDouble() ?? 0;
@@ -46,6 +47,9 @@ class BotConnection extends ChangeNotifier {
   Link link = Link.offline;
   bool viaRemote = false;
   bool bubbleOn = true;
+  bool aiReady = false; // the PC has an Anthropic API key: "do anything" tasks work
+  bool keywordSet = false; // a safety word is set on the PC
+  bool busy = false; // the PC is working on an AI task right now
 
   final cursor = ValueNotifier<CursorPos?>(null);
   final screenInfo = ValueNotifier<ScreenInfo?>(null);
@@ -239,6 +243,9 @@ class BotConnection extends ChangeNotifier {
         final ts = (msg['tailscale'] ?? '').toString();
         if (ts.isNotEmpty) remoteHost = ts;
         bubbleOn = msg['bubble'] != false;
+        aiReady = msg['ai'] == true;
+        keywordSet = msg['keyword_set'] == true;
+        busy = msg['busy'] == true;
         _failures = 0;
         _setLink(Link.online);
         save();
@@ -246,9 +253,23 @@ class BotConnection extends ChangeNotifier {
         _events.add(BotEvent('welcome',
             viaRemote ? 'Connected to $pcName from outside (Tailscale)' : 'Connected to $pcName'));
       case 'result':
+        if (msg['busy'] == false && busy) {
+          busy = false;
+          notifyListeners();
+        }
         _events.add(BotEvent('result', text, ok: msg['ok'] == true));
+      case 'progress':
+        if (!busy) {
+          busy = true;
+          notifyListeners();
+        }
+        _events.add(BotEvent('progress', text));
       case 'confirm':
-        _events.add(BotEvent('confirm', text, id: (msg['id'] ?? '').toString()));
+        _events.add(BotEvent('confirm', text, id: (msg['id'] ?? '').toString(), keyword: msg['keyword'] == true));
+      case 'keyword_status':
+        keywordSet = msg['set'] == true;
+        notifyListeners();
+        _events.add(BotEvent('keyword_status', text, ok: msg['ok'] == true));
       case 'error':
         _events.add(BotEvent('error', text, ok: false));
         if (msg['fatal'] == true) _autoReconnect = false;
@@ -285,6 +306,9 @@ class BotConnection extends ChangeNotifier {
     _screenQuality = null;
     _syncSubscriptions();
   }
+
+  /// Stop the AI task that's running on the PC.
+  void stopTask() => send({'type': 'stop'});
 
   void setBubble(bool on) {
     bubbleOn = on;

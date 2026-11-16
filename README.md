@@ -69,6 +69,31 @@ Moving the mouse into a screen corner stops any running mouse or keyboard action
 - **Touchpad:** the phone becomes a touchpad and keyboard. Move with 1 finger, tap to click, scroll with 2 fingers,
   and 2-finger tap to right-click.
 
+## "Do anything" tasks (AI brain)
+
+Built-in commands, like "open chrome", run instantly and for free. For **anything else**, such as
+"go to the top right and select Gmail" or "open my Downloads folder and sort by date",
+BOT asks **Claude** (Anthropic's AI). Claude looks at your screen and tells BOT where to click and what to type,
+step by step, and you watch the blue bubble do it.
+
+1. Create an API key at https://console.anthropic.com (Settings → API Keys) and add some credit.
+2. Double-click **`pc-agent\set_api_key.bat`** and paste the key. It's saved only in `pc-agent\config.json` on your PC.
+3. Talk to BOT as usual, from the home screen or from the **Screen** page (hold the little face in the corner).
+
+- **Cost:** a short task (3–6 steps) is usually a few US cents. Each reply shows an estimate, e.g. *(≈ $0.04)*.
+  The model is `claude-opus-5-5` by default. To use a cheaper one, set `"ai_model": "claude-sonnet-5-5"` in `config.json`.
+- **Stopping it:** tap **Stop** in the app, say "stop", or at the PC **move the mouse or press Esc**.
+- **Be aware:** this is your real PC, not a sandbox. Claude is told to treat text on screen as information, not orders,
+  never to type passwords or card details, and to ask for your safety word before risky steps. Still, keep an eye on it
+  when it works in email, banking or other important accounts.
+
+## Safety word
+
+The first time you connect, the app asks you to choose a **safety word**. BOT asks for it (say it or type it)
+before anything that **deletes, sends, shares, posts, uploads, pays or uninstalls**, both when your request
+sounds like that and whenever the AI is about to take such a step. The PC stores only a scrambled (hashed) form of it,
+never the word itself. Three wrong tries cancel the task. Change it from the ⋮ menu → *Change safety word*.
+
 ## Use BOT outside home (Tailscale)
 
 1. Install **Tailscale** (free) on the PC: https://tailscale.com/download. Sign in.
@@ -108,4 +133,5 @@ mobile-app/     Flutter app: lib/main.dart. The android/ folder is generated in 
 - [x] Phase 3: robot face with moods and mouse-tracking eyes, blue bubble cursor (cancel with mouse or Esc, on/off switch)
 - [x] Phase 4: live screen view and touchpad + keyboard
 - [x] Phase 5: use from outside home via Tailscale
-- [ ] Next: click buttons by name ("click Submit"), routines, AI brain for free-form tasks
+- [x] Phase 6: AI brain for any task (Claude computer use), talk from the Screen page, safety word
+- [ ] Next: routines ("good morning" = several actions), more languages

@@ -7,12 +7,23 @@ import 'package:flutter/services.dart';
 import 'connection.dart';
 import 'face.dart';
 import 'key_bar.dart';
+import 'voice.dart';
 
 /// Live view of the PC's main monitor. Tap = click (BOT's bubble glides there first),
 /// double-tap = double-click, long-press = right-click, pinch = zoom.
+/// Hold the little BOT face in the corner to give it a task while you watch.
 class ScreenPage extends StatefulWidget {
-  const ScreenPage({super.key, required this.conn});
+  const ScreenPage({
+    super.key,
+    required this.conn,
+    required this.voice,
+    required this.locale,
+    required this.onCommand,
+  });
   final BotConnection conn;
+  final Voice voice;
+  final String locale;
+  final void Function(String text) onCommand;
 
   @override
   State<ScreenPage> createState() => _ScreenPageState();
@@ -26,8 +37,13 @@ class _ScreenPageState extends State<ScreenPage> {
   StreamSubscription<Uint8List>? _frameSub;
   StreamSubscription<BotEvent>? _eventSub;
   final _zoom = TransformationController();
+  String _caption = '';
+  bool _captionOk = true;
+  Timer? _captionTimer;
+  bool _waiting = false;
 
   BotConnection get conn => widget.conn;
+  Voice get voice => widget.voice;
 
   @override
   void initState() {
@@ -43,14 +59,112 @@ class _ScreenPageState extends State<ScreenPage> {
       }
     });
     _eventSub = conn.events.listen((e) {
-      if (e.type == 'screen_error' && mounted) setState(() => _error = e.message);
+      if (!mounted) return;
+      switch (e.type) {
+        case 'screen_error':
+          setState(() => _error = e.message);
+        case 'progress':
+          _showCaption(e.message, keep: true);
+          _waiting = true;
+        case 'result' || 'error' || 'keyword_status':
+          _waiting = false;
+          _showCaption(e.message, ok: e.ok);
+      }
     });
     conn.addListener(_onConn);
+    voice.addListener(_onConn);
     conn.startScreen(_quality);
+  }
+
+  void _showCaption(String text, {bool ok = true, bool keep = false}) {
+    _captionTimer?.cancel();
+    setState(() {
+      _caption = text;
+      _captionOk = ok;
+    });
+    if (!keep) {
+      _captionTimer = Timer(const Duration(seconds: 5), () {
+        if (mounted) setState(() => _caption = '');
+      });
+    }
+  }
+
+  void _talkDown(PointerDownEvent _) {
+    HapticFeedback.mediumImpact();
+    voice.start(widget.locale, (text) {
+      widget.onCommand(text);
+      if (mounted) {
+        _waiting = true;
+        _showCaption('“$text”', keep: true);
+      }
+    });
+  }
+
+  void _talkUp(PointerEvent _) => voice.stop();
+
+  Mood get _mood {
+    if (voice.listening) return Mood.listening;
+    if (_waiting || conn.busy) return Mood.thinking;
+    if (_caption.isNotEmpty) return _captionOk ? Mood.happy : Mood.sad;
+    return conn.online ? Mood.idle : Mood.sleepy;
+  }
+
+  Widget _overlayCaption() {
+    final text = voice.listening ? (voice.heard.isEmpty ? 'Listening…' : voice.heard) : _caption;
+    if (text.isEmpty && !conn.busy) return const SizedBox.shrink();
+    return Row(
+      children: [
+        if (text.isNotEmpty)
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xE6111B3A),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: (_captionOk || voice.listening ? botBlue : Colors.redAccent).withAlpha(200)),
+              ),
+              child: Text(text,
+                  maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+            ),
+          ),
+        if (conn.busy) ...[
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () {
+              HapticFeedback.mediumImpact();
+              conn.stopTask();
+            },
+            icon: const Icon(Icons.stop),
+            label: const Text('Stop'),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _miniFace() {
+    return ValueListenableBuilder<CursorPos?>(
+      valueListenable: conn.cursor,
+      builder: (context, c, _) => Listener(
+        onPointerDown: _talkDown,
+        onPointerUp: _talkUp,
+        onPointerCancel: _talkUp,
+        child: RobotFace(
+          mood: _mood,
+          look: c == null ? null : Offset(c.vx * 2 - 1, c.vy * 2 - 1),
+          lookStamp: c?.at,
+          level: voice.listening ? voice.level : 0,
+          size: 84,
+        ),
+      ),
+    );
   }
 
   @override
   void dispose() {
+    _captionTimer?.cancel();
+    voice.removeListener(_onConn);
     conn.removeListener(_onConn);
     conn.stopScreen();
     _frameSub?.cancel();
@@ -161,10 +275,18 @@ class _ScreenPageState extends State<ScreenPage> {
       ),
       body: Column(
         children: [
-          Expanded(child: Center(child: _view())),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned.fill(child: Center(child: _view())),
+                Positioned(left: 10, right: 10, top: 8, child: _overlayCaption()),
+                Positioned(right: 6, bottom: 4, child: _miniFace()),
+              ],
+            ),
+          ),
           const Padding(
             padding: EdgeInsets.all(6),
-            child: Text('Tap = click · double-tap = double-click · long-press = right-click · pinch = zoom',
+            child: Text('Tap = click · long-press = right-click · pinch = zoom · hold BOT to talk',
                 textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
           ),
           KeyBar(conn: conn),

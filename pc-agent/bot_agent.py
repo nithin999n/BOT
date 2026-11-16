@@ -29,8 +29,11 @@ from pathlib import Path
 import websockets
 
 import actions
+import ai_agent
 import matcher
+import router
 import screen
+import security
 from overlay import BUBBLE
 
 HERE = Path(__file__).resolve().parent
@@ -96,6 +99,12 @@ def find_tailscale_ip() -> str:
 
 
 CFG: dict = {}
+AGENT = ai_agent.Agent(CFG)
+LANG_NAMES = {"en": "English", "hi": "Hindi", "kn": "Kannada", "te": "Telugu"}
+
+
+def save_config() -> None:
+    CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
 
 
 def set_bubble(on: bool) -> None:
@@ -103,7 +112,7 @@ def set_bubble(on: bool) -> None:
     BUBBLE.set_wanted(on)
     if CFG.get("bubble_cursor") != on:
         CFG["bubble_cursor"] = on
-        CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
+        save_config()
     log.info("Bubble cursor %s", "on" if on else "off")
 
 
@@ -185,10 +194,17 @@ class Session:
         self.ack = asyncio.Event()
         self.geom = win_input.primary_screen()  # area shown in the screen view
         self.buttons_down: set[str] = set()
+        self.bad_old_words = 0
 
     def close(self) -> None:
         self.cursor_hz = 0
         self.screen_quality = None
+        if AGENT.busy and AGENT.owner is self:  # phone went away: don't keep acting on the PC
+            AGENT.stop()
+        for item in self.pending.values():
+            fut = item.get("future")
+            if fut is not None and not fut.done():
+                fut.set_result(False)
         for task in (self.cursor_task, self.screen_task):
             if task and not task.done():
                 task.cancel()
@@ -288,31 +304,126 @@ async def handle_command(sess: Session, msg: dict) -> None:
     if not text:
         return
     log.info("Heard [%s]: %s", lang, text)
+    if AGENT.busy:
+        if router.is_stop(text):
+            AGENT.stop()
+            await send(sess.ws, type="result", ok=True, message="Stopping…", heard=text)
+        else:
+            await send(sess.ws, type="result", ok=False, heard=text,
+                       message="I'm still working on the last task. Say \"stop\" to cancel it.")
+        return
     m = matcher.match(text)
-    if m is None:
-        record_unmatched(text, lang)
-        log.info("  -> not understood")
-        await send(sess.ws, type="result", ok=False, heard=text,
-                   message=f"Sorry, I don't know that command yet: \"{text}\"")
+    if m is not None and (not AGENT.available or router.prefer_builtin(text, m)):
+        log.info("  -> %s %s", m.intent, m.target or m.arg)
+        if m.needs_confirm:
+            cid = uuid.uuid4().hex
+            sess.pending[cid] = {"kind": "intent", "match": m, "text": text, "at": time.time()}
+            await send(sess.ws, type="confirm", id=cid,
+                       message=actions.CONFIRM_TEXT.get(m.intent, "Are you sure?"))
+            return
+        await run_match(sess.ws, m, text)
         return
-    log.info("  -> %s %s", m.intent, m.target or m.arg)
-    if m.needs_confirm:
-        cid = uuid.uuid4().hex
-        sess.pending[cid] = (m, text, time.time())
-        await send(sess.ws, type="confirm", id=cid,
-                   message=actions.CONFIRM_TEXT.get(m.intent, "Are you sure?"))
+    if AGENT.available:
+        log.info("  -> AI task")
+        # A background task, so this connection can still receive "stop" and safety-word replies.
+        asyncio.create_task(run_ai(sess, text, lang))
         return
-    await run_match(sess.ws, m, text)
+    record_unmatched(text, lang)
+    log.info("  -> not understood")
+    await send(sess.ws, type="result", ok=False, heard=text,
+               message=f"Sorry, I don't know \"{text}\" yet. To let me do any task you ask, "
+                       "add an Anthropic API key on the PC (run set_api_key.bat).")
+
+
+async def ask_safety_word(sess: Session, message: str) -> bool:
+    """Ask the phone for the safety word; True only if the right word comes back."""
+    if not security.is_set(CFG):
+        await send(sess.ws, type="result", ok=False,
+                   message="This needs your safety word, but you haven't set one yet. "
+                           "Set it in the app: ⋮ menu → Safety word.")
+        return False
+    fut = asyncio.get_running_loop().create_future()
+    cid = uuid.uuid4().hex
+    sess.pending[cid] = {"kind": "keyword", "future": fut, "attempts": 0, "message": message}
+    try:
+        await send(sess.ws, type="confirm", id=cid, message=message, keyword=True)
+        return await asyncio.wait_for(fut, timeout=150)
+    except (asyncio.TimeoutError, websockets.ConnectionClosed):
+        return False
+    finally:
+        sess.pending.pop(cid, None)
+
+
+async def run_ai(sess: Session, text: str, lang: str) -> None:
+    loop = asyncio.get_running_loop()
+    try:
+        if security.is_sensitive(text):
+            ok = await ask_safety_word(sess, f"This task may delete, send or share something:\n“{text}”\n\n"
+                                             "Say or type your safety word to continue.")
+            if not ok:
+                await send(sess.ws, type="result", ok=False, heard=text, busy=False,
+                           message="Cancelled: safety word not confirmed.")
+                return
+
+        def progress(message: str) -> None:
+            asyncio.run_coroutine_threadsafe(_send_quietly(sess.ws, type="progress", message=message), loop)
+
+        def confirm(action: str) -> bool:
+            fut = asyncio.run_coroutine_threadsafe(
+                ask_safety_word(sess, f"BOT wants to: {action}\n\nSay or type your safety word to allow it."), loop)
+            try:
+                return bool(fut.result(timeout=170))
+            except Exception:
+                return False
+
+        await send(sess.ws, type="progress", message="On it…", busy=True)
+        ok, message = await asyncio.to_thread(AGENT.run, text, LANG_NAMES.get(lang, "English"),
+                                              progress, confirm, sess)
+        log.info("  -> AI %s: %s", "ok" if ok else "FAILED", message)
+        await send(sess.ws, type="result", ok=ok, message=message, heard=text, busy=False)
+    except websockets.ConnectionClosed:
+        pass
+    except Exception:
+        log.exception("AI task crashed")
+        await _send_quietly(sess.ws, type="result", ok=False, heard=text, busy=False,
+                            message="Something went wrong with that task (see bot.log).")
+
+
+async def _send_quietly(ws, **msg) -> None:
+    try:
+        await send(ws, **msg)
+    except websockets.ConnectionClosed:
+        pass
 
 
 async def handle_confirm(sess: Session, msg: dict) -> None:
-    item = sess.pending.pop(str(msg.get("id", "")), None)
+    cid = str(msg.get("id", ""))
+    item = sess.pending.get(cid)
     if item is None:
         return
-    m, text, asked_at = item
+    if item["kind"] == "keyword":
+        fut = item["future"]
+        if fut.done():
+            return
+        if not msg.get("yes"):
+            fut.set_result(False)
+        elif security.verify(CFG, str(msg.get("keyword", ""))):
+            fut.set_result(True)
+        else:
+            item["attempts"] += 1
+            left = 3 - item["attempts"]
+            if left <= 0:
+                fut.set_result(False)
+                await send(sess.ws, type="result", ok=False, message="Wrong safety word 3 times. Cancelled.")
+            else:
+                await send(sess.ws, type="confirm", id=cid, keyword=True,
+                           message=f"Wrong safety word ({left} tries left).\n\n{item['message']}")
+        return
+    sess.pending.pop(cid, None)
+    m, text = item["match"], item["text"]
     if not msg.get("yes"):
         await send(sess.ws, type="result", ok=True, message="Okay, cancelled", heard=text)
-    elif time.time() - asked_at > CONFIRM_TIMEOUT:
+    elif time.time() - item["at"] > CONFIRM_TIMEOUT:
         await send(sess.ws, type="result", ok=False, message="Too late, please say it again", heard=text)
     else:
         await run_match(sess.ws, m, text)
@@ -339,6 +450,21 @@ async def dispatch(sess: Session, msg: dict) -> None:
     elif kind == "set_bubble":
         set_bubble(bool(msg.get("on")))
         await send(sess.ws, type="bubble", on=BUBBLE.wanted)
+    elif kind == "stop":
+        if AGENT.busy:
+            AGENT.stop()
+    elif kind == "set_keyword":
+        if sess.bad_old_words >= 5:
+            await send(sess.ws, type="keyword_status", ok=False, set=security.is_set(CFG),
+                       message="Too many wrong tries. Reconnect and try again.")
+            return
+        ok, message = security.set_word(CFG, str(msg.get("new", ""))[:100], str(msg.get("old", ""))[:100])
+        if ok:
+            save_config()
+            log.info("Safety word set/changed")
+        elif security.is_set(CFG):
+            sess.bad_old_words += 1
+        await send(sess.ws, type="keyword_status", ok=ok, set=security.is_set(CFG), message=message)
     elif kind == "tap":
         u, v = _num(msg.get("u"), -1, -1, 2), _num(msg.get("v"), -1, -1, 2)
         if 0 <= u <= 1 and 0 <= v <= 1:
@@ -385,7 +511,9 @@ def make_handler(cfg: dict):
 
         log.info("Phone connected from %s", ip)
         await send(ws, type="welcome", pc=socket.gethostname(), tailscale=_tailscale_ip,
-                   bubble=BUBBLE.wanted, features=["cursor", "screen", "touchpad", "keys", "bubble"])
+                   bubble=BUBBLE.wanted, ai=AGENT.available, busy=AGENT.busy,
+                   keyword_set=security.is_set(CFG),
+                   features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword"])
         sess = Session(ws)
         try:
             async for raw in ws:
@@ -446,6 +574,8 @@ async def main() -> int:
     PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
     ip = local_ip()
     log.info("BOT running on %s at %s:%s", socket.gethostname(), ip, port)
+    log.info("AI tasks: %s", f"on ({CFG.get('ai_model') or ai_agent.DEFAULT_MODEL})" if AGENT.available
+             else "off (run set_api_key.bat to turn on)")
     line = "=" * 46
     show(f"\n{line}\n  BOT is running on {socket.gethostname()}")
     show(f"  IP address : {ip}\n  Port       : {port}\n  PIN        : {cfg['pin']}")

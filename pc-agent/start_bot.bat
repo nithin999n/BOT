@@ -1,5 +1,5 @@
 @echo off
 cd /d "%~dp0"
-python -m pip install -q -r requirements.txt
-python bot_agent.py
+python autostart.py setup
+"%LOCALAPPDATA%\BOT\venv\Scripts\python.exe" bot_agent.py
 pause
