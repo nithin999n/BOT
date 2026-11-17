@@ -114,8 +114,46 @@ AGENT = ai_agent.Agent(CFG)
 LANG_NAMES = {"en": "English", "hi": "Hindi", "kn": "Kannada", "te": "Telugu"}
 
 
+import threading as _threading
+_CFG_LOCK = _threading.Lock()  # the desktop BOT saves from its own thread
+
+
 def save_config() -> None:
-    CONFIG_PATH.write_text(json.dumps(CFG, indent=2), encoding="utf-8")
+    with _CFG_LOCK:
+        CONFIG_PATH.write_text(json.dumps(CFG, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def save_pet_life(data: dict) -> None:
+    CFG["pet_life"] = data
+    save_config()
+
+
+async def send_file_to_phone(path: str) -> None:
+    """A file dropped on the desktop BOT -> the phone (Download/BOT)."""
+    name = os.path.basename(path)
+    sess = next((s for s in SESSIONS if s.lan), None) or next(iter(SESSIONS), None)
+    if sess is None:
+        PET.file_sent(False, "Connect your phone first 📱 then drop it on me again!")
+        return
+    try:
+        size = os.path.getsize(path)
+        if size > 300 * 1024 * 1024:
+            PET.file_sent(False, f"{name} is too big for me 🥴 (max 300 MB)")
+            return
+        fid = uuid.uuid4().hex[:12]
+        await send(sess.ws, type="file_down", id=fid, name=name, size=size)
+        with open(path, "rb") as fh:
+            while True:
+                chunk = await asyncio.to_thread(fh.read, 192 * 1024)
+                if not chunk:
+                    break
+                await send(sess.ws, type="file_down_chunk", id=fid, data=base64.b64encode(chunk).decode("ascii"))
+        await send(sess.ws, type="file_down_end", id=fid)
+        log.info("Sent %s (%d bytes) to the phone", name, size)
+        PET.file_sent(True, f"Sent {name} to your phone! 📲✨")
+    except (OSError, websockets.ConnectionClosed) as exc:
+        log.warning("Sending %s to the phone failed: %s", name, exc)
+        PET.file_sent(False, f"Oops, I couldn't send {name} 🥺")
 
 
 TRAY = None  # the icon in the Windows system tray
@@ -214,6 +252,8 @@ async def watch_forever() -> None:
             PET.health = h
             if SESSIONS:
                 await broadcast(type="health", **h)
+                if tick % 5 == 0:
+                    await broadcast(type="pet_stats", **PET.stats())
             # presence: ping the phone now and then when it isn't connected over Wi-Fi
             ip = _presence["last_lan_ip"]
             if ip and not any(s.lan for s in SESSIONS) and time.time() > _presence["next_ping"]:
@@ -729,6 +769,33 @@ async def dispatch(sess: Session, msg: dict) -> None:
     elif kind == "set_pet":
         set_pet(bool(msg.get("on")))
         await send(sess.ws, type="pet", on=PET.wanted)
+    elif kind == "pet_action":  # Care card in the app
+        action, value = str(msg.get("action", "")), msg.get("value")
+        text = ""
+        if action == "feed":
+            PET.feed()
+            text = "Gave BOT a cookie 🍪"
+        elif action == "chase":
+            PET.start_chase(45)
+            text = "Chase game started on the PC! Catch BOT 🏃"
+        elif action == "focus":
+            minutes = int(_num(value, 25, 1, 180))
+            PET.start_focus(minutes)
+            text = f"Focus mode: {minutes} minutes 🍅"
+        elif action == "focus_stop":
+            PET.stop_focus()
+            text = "Focus stopped"
+        elif action == "report":
+            text = PET.show_report()
+        elif action == "outfit":
+            PET.set_outfit(str(value))
+            text = f"Outfit: {value}"
+        elif action == "sorry":
+            text = PET.apologize()
+        if text:
+            await send(sess.ws, type="result", ok=True, message=text)
+            await asyncio.sleep(0.3)
+            await send(sess.ws, type="pet_stats", **PET.stats())
     elif kind == "pet_react":  # petting / tapping BOT on the phone makes the desktop BOT react too
         mood = str(msg.get("mood", "happy"))
         if mood in ("happy", "love", "excited", "surprised", "sad"):
@@ -856,7 +923,7 @@ def make_handler(cfg: dict):
                    bubble=BUBBLE.wanted, ai=AGENT.available, busy=AGENT.busy or smart.RUNNER.busy,
                    keyword_set=security.is_set(CFG), mac=_net["mac"], broadcast=_net["broadcast"],
                    routines=routines.get(CFG), style=CFG.get("style", {}),
-                   pet=PET.wanted, walkaway=CFG.get("walkaway", {}), health=PET.health,
+                   pet=PET.wanted, walkaway=CFG.get("walkaway", {}), health=PET.health, pet_stats=PET.stats(),
                    away_alerts=list(ALERTS),
                    features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword",
                              "routines", "files", "clipboard", "style", "health", "alerts", "gamepad", "pet"])
@@ -921,6 +988,10 @@ async def main() -> int:
     PET.busy_fn = lambda: AGENT.busy or smart.RUNNER.busy
     # Thrown / petted on the PC -> the BOT on your phone reacts too
     PET.on_event = lambda ev: asyncio.run_coroutine_threadsafe(broadcast(type="pet_event", event=ev), loop)
+    PET.load_life(CFG.get("pet_life"), save_pet_life)
+    PET.notify_fn = lambda title, message: asyncio.run_coroutine_threadsafe(
+        push_alert({"kind": "bot", "title": title, "message": message, "time": datetime.now().strftime("%H:%M")}), loop)
+    PET.send_file_fn = lambda path: asyncio.run_coroutine_threadsafe(send_file_to_phone(path), loop)
     PET.start()
     apply_style()
     jobs = [asyncio.create_task(refresh_tailscale_forever()), asyncio.create_task(watch_forever())]
@@ -982,7 +1053,10 @@ async def main() -> int:
         toggle_pet=from_tray(tray_toggle_pet), toggle_bubble=from_tray(tray_toggle_bubble),
         toggle_walkaway=from_tray(tray_toggle_walkaway), bring_pet=tray_bring,
         autostart_on=lambda: autostart.LAUNCHER.exists(), set_autostart=tray_set_autostart,
-        open_files=lambda: tray_mod.open_folder(str(DOWNLOADS)), quit_bot=tray_quit)
+        open_files=lambda: tray_mod.open_folder(str(DOWNLOADS)), quit_bot=tray_quit,
+        extras=[("🍪 Feed BOT a cookie", PET.feed), ("🏃 Play chase", lambda: PET.start_chase(45)),
+                ("🍅 Focus 25 minutes", lambda: PET.start_focus(25)), ("📊 Daily report", PET.show_report),
+                ("💕 Say sorry", PET.apologize)])
     TRAY.start()
 
     try:

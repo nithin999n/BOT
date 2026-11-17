@@ -1,13 +1,15 @@
 """
 BOT on your PC desktop: a squishy blue cube-blob with big round black eyes.
 
-* Eyes follow your mouse and blink. It gets happy and bouncy while you type or work,
-  and cheers you on. Now and then it asks cute questions in a speech bubble.
-* Click it and it feels loved: "Do you love me? 🥺". Click again: "Yay!! I love you too! 💖"
-* Grab it and throw it: it flies, spins, bounces, and gets dizzy after a hard throw.
-* Yawns when you're idle, sleeps after 5 minutes, says "welcome back" when you return.
-* Sweats when the CPU is busy, looks worried on low battery, sparkles while charging.
-* The blue bubble cursor flies out of it when BOT works. Never steals keyboard focus.
+Personality
+* Eyes follow your mouse; happy and bouncy while you type; dances when music plays 💃.
+* Asks cute questions (some with answer buttons it remembers), begs for pats with puppy eyes
+  and cries if you ignore it for 10 seconds 😭, peeks out from the screen edge (peek-a-boo).
+* Click = "Do you love me? 🥺". Grab and throw it (it gets dizzy). Play chase: catch it!
+* Care: hunger / happiness / level (feed it cookies 🍪). Levels unlock outfits 🎀😎🎉👑.
+* Focus buddy 🍅, water & stretch reminders, good morning / good night, daily report.
+* Drop a file on it: it swallows it and sends it to your phone 📲.
+* Sweats when the CPU is busy, worried on low battery, sparkles while charging.
 """
 from __future__ import annotations
 
@@ -15,38 +17,35 @@ import ctypes
 import ctypes.wintypes as wt
 import logging
 import math
+import os
 import queue
 import random
 import threading
 import time
+from datetime import date, datetime
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import health
+import pet_outfits
 import win_input
 from overlay import (AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BUBBLE, PM_REMOVE,
                      SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
                      WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, _premultiplied_bgra, gdi32, kernel32, user32)
+from pet_life import (BEG, BEG_YES, CRY, FORGIVE, REPLIES, KeyCounter, Life, MusicMeter, pick_question)
 
 log = logging.getLogger("bot")
-SS = 2  # supersampling for smooth edges
+SS = 2                        # supersampling for smooth edges
 INK = (22, 24, 38)            # the black of the eyes
 BLUE = (58, 141, 255)         # BOT's body colour
 PINK = (255, 126, 182)
 WHITE = (255, 255, 255)
+TEAR = (120, 200, 255)
 
-QUESTIONS = [
-    "What are you doing? 👀", "Are you working hard? 💪", "Did you drink water today? 💧",
-    "Can we play later? 🎮", "You're doing great! ✨", "Ooh, is that code? So smart! 🤓",
-    "Do you want a hug? 🤗", "Take a little break? ☕", "What's your favourite song? 🎵",
-    "Are you hungry? 🍕", "I like watching you work 🥰", "Can I help with something? 🙋",
-    "Did you eat something today? 🍎", "You look busy! 👀", "Is it fun? 😊", "Tell me a secret? 🤫",
-]
 TYPING_CHEERS = ["You're typing so fast! ✨", "Wow, so productive! 💪", "Keep going, you've got this! 🔥",
                  "Clickety clack! 🎹", "Look at you go! 🚀"]
 LOVE_ASK = ["Do you love me? 🥺", "Do you love me? 🥺💕", "Am I cute? 🥹", "Pat pat? 🥺"]
-LOVE_YES = ["Yay!! I love you too! 💖", "Hehe, best human ever! 🥰", "Aww, you're the best! 💕",
-            "My heart is so full! 💗"]
+LOVE_YES = ["Yay!! I love you too! 💖", "Hehe, best human ever! 🥰", "Aww, you're the best! 💕", "My heart is so full! 💗"]
 WELCOME = ["Welcome back! I missed you 🥺", "You're back! Yay! 🎉", "Hiii! I waited for you 🥰"]
 DIZZY = ["Wheee… 😵", "Everything is spinning! 😵", "Be gentle with me! 🥺", "Again? No no no! 😵"]
 PICKED = ["Whoa! 😲", "Where are we going? 👀", "Wheee! 🎈", "Up up up! 😲"]
@@ -54,6 +53,17 @@ SLEEPY = ["*yawn* 😪", "So sleepy… 😴"]
 CHARGING = ["Yummy electricity ⚡", "Charging up! 🔋"]
 HOT = ["Phew, so hot in here! 🥵", "The PC is working hard! 😅"]
 LOW_BATTERY = ["Battery is low… plug me in? 🥺"]
+WATER = ["Time to drink some water! 💧", "Water break? 💧 Stay hydrated!"]
+STRETCH = ["Stretch break! 🙆 Arms up!", "Roll your shoulders! 🙆 You've been working hard"]
+NIGHT = ["It's late… go to sleep? 🌙", "Sleepy time soon? 🌙 You need rest!"]
+HUNGRY = ["I'm hungry… 🥺 cookie please? 🍪", "My tummy is rumbling 🥺🍪"]
+DANCE = ["I love this song! 🎶", "Dance with me! 💃", "Ooh, music! 🎵"]
+BOO = ["Boo! 😆", "Peek-a-boo! 😆", "You found me! 🙈"]
+LEAVING = ["That's it! I'm leaving! You're being too hard on me 😤", "Hmph! I'm going away! Too rough! 😤💢"]
+ASK_SORRY = ["…Aren't you going to say sorry? 🥺", "I came back… will you say sorry? 🥺", "Say sorry pleeease? 🥺"]
+SULK = ["Hmph! Say sorry first 😤", "Not until you say sorry! 😤"]
+FORGIVEN = ["Okay… I forgive you 🥺💕 Just be gentle, okay?", "Hehe, okay! Friends again! 💖🤝"]
+SORRY_OPTS = (("Sorry 🥺", "sorry:yes"), ("I'm really sorry 💕", "sorry:yes"))
 
 
 class _Rect(ctypes.Structure):
@@ -100,8 +110,15 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
+shell32 = ctypes.windll.shell32
+shell32.DragAcceptFiles.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
+shell32.DragQueryFileW.restype = ctypes.c_uint
+shell32.DragFinish.argtypes = [ctypes.c_void_p]
+
+
 class Pet:
-    """Thread-safe: call react() / say() / set_wanted() / set_color() from anywhere."""
+    """Thread-safe: the public methods only queue commands for BOT's own thread."""
 
     def __init__(self):
         self.enabled = False      # window works
@@ -109,6 +126,9 @@ class Pet:
         self.health: dict = {"feeling": "ok"}
         self.busy_fn = lambda: False
         self.on_event = None      # callback(event) -> "dizzy", "petted" (tells the phone)
+        self.notify_fn = None     # callback(title, message) -> alert on the phone
+        self.send_file_fn = None  # callback(path) -> sends a dropped file to the phone
+        self.life = Life(None, lambda d: None)
         self._q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._color = BLUE        # the desktop BOT is always a cute blue
@@ -126,14 +146,34 @@ class Pet:
         self._dizzy_until = 0.0
         self._walk_dir, self._walk_to, self._walk_t0 = 1, 0.0, 0.0
         self._next_walk = time.perf_counter() + 25
+        # games & modes
+        self.peek_side = 0         # -1 left / +1 right while hiding at the edge, else 0
+        self._peek_x = 0.0
+        self._peek_until = 0.0
+        self.chase_until = 0.0
+        self.catches = 0
+        self.focus_until = 0.0
+        self.focus_minutes = 25
+        # too many throws -> angry, leaves, comes back sulking until you say sorry
+        self._throws: list[float] = []
+        self.leaving = 0           # direction it stomps off (-1 / +1), 0 = not leaving
+        self.away_until = 0.0
+        self.sulking = False
+        self._return_happy = False
+        self._chips: list[tuple[float, float, float, float, str]] = []  # answer buttons (window px)
         self._last_img = None
         self._body_cache = None
         self._shadow_cache = None
-        self._bubble_cache: dict[str, Image.Image] = {}
+        self._bubble_cache: dict = {}
+        self.keys = KeyCounter()
 
     # -- public ------------------------------------------------------------------
+    def load_life(self, data: dict | None, save_fn) -> None:
+        self.life = Life(data, save_fn)
+
     def start(self) -> None:
         if self._thread is None:
+            self.keys.start()
             self._thread = threading.Thread(target=self._run, name="desktop-pet", daemon=True)
             self._thread.start()
 
@@ -145,16 +185,52 @@ class Pet:
         return
 
     def bring_here(self) -> None:
-        """Drop BOT in from the top of the screen, above your mouse."""
         self.wanted = True
         self._q.put(("bring",))
 
     def react(self, mood: str, seconds: float = 2.0) -> None:
-        """Show a mood for a moment: happy, excited, sad, love, surprised."""
         self._q.put(("react", mood, seconds))
 
     def say(self, text: str, seconds: float = 4.0) -> None:
         self._q.put(("say", text, seconds))
+
+    def feed(self) -> None:
+        self.wanted = True
+        self._q.put(("feed",))
+
+    def start_chase(self, seconds: float = 45) -> None:
+        self.wanted = True
+        self._q.put(("chase", seconds))
+
+    def start_focus(self, minutes: int = 25) -> None:
+        self.wanted = True
+        self._q.put(("focus", minutes))
+
+    def stop_focus(self) -> None:
+        self._q.put(("focus_stop",))
+
+    def set_outfit(self, outfit: str) -> None:
+        self._q.put(("outfit", outfit))
+
+    def show_report(self) -> str:
+        text = self.life.report()
+        self._q.put(("say", text, 8.0))
+        return text
+
+    def apologize(self) -> str:
+        """You said sorry (button or voice)."""
+        self._q.put(("answer", "sorry:yes"))
+        return "You said sorry to BOT 💕" if self.sulking else "BOT says: no need, I love you! 💖"
+
+    def file_sent(self, ok: bool, message: str) -> None:
+        self._q.put(("say", message, 4.0))
+        if ok:
+            self._q.put(("react", "happy", 2.0))
+
+    def stats(self) -> dict:
+        s = self.life.public()
+        s["focus_left"] = max(0, int(self.focus_until - time.time())) if self.focus_until else 0
+        return s
 
     def center(self):
         """Where the blue bubble cursor flies out from (None if BOT isn't showing)."""
@@ -167,7 +243,14 @@ class Pet:
             except Exception:
                 pass
 
-    # -- grab, drag, throw ---------------------------------------------------------
+    def _notify(self, title: str, message: str) -> None:
+        if self.notify_fn:
+            try:
+                self.notify_fn(title, message)
+            except Exception:
+                pass
+
+    # -- window messages: grab / drag / throw / drop files ---------------------------
     def _wnd(self, hwnd, msg, wparam, lparam):
         if msg == 0x0021:            # WM_MOUSEACTIVATE: never steal focus from your app
             return 3                 # MA_NOACTIVATE
@@ -183,7 +266,24 @@ class Pet:
         if msg == 0x0215 and self.dragging:  # WM_CAPTURECHANGED
             self._release()
             return 0
+        if msg == 0x0233:            # WM_DROPFILES: you dropped files on BOT
+            self._dropped(wparam)
+            return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _dropped(self, hdrop) -> None:
+        paths = []
+        try:
+            n = shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+            for i in range(n):
+                buf = ctypes.create_unicode_buffer(1024)
+                shell32.DragQueryFileW(hdrop, i, buf, 1024)
+                if os.path.isfile(buf.value):
+                    paths.append(buf.value)
+        finally:
+            shell32.DragFinish(hdrop)
+        if paths:
+            self._q.put(("swallow", paths))
 
     def _grab(self) -> None:
         cx, cy = win_input.cursor_pos()
@@ -201,9 +301,18 @@ class Pet:
         user32.ReleaseCapture()
         now = time.perf_counter()
         if self._moved < 6 and now - self._grab_t < 0.35:  # a click, not a throw
-            self._q.put(("click",))
-            self.flying, self.vx, self.vy = True, 0.0, 0.0  # settle on the floor
+            cx, cy = win_input.cursor_pos()
+            px, py = cx - self.x, cy - self.y
+            for x0, y0, x1, y1, value in self._chips:  # an answer button?
+                if x0 <= px <= x1 and y0 <= py <= y1:
+                    self._q.put(("answer", value))
+                    break
+            else:
+                self._q.put(("click",))
+            if not self.peek_side:
+                self.flying, self.vx, self.vy = True, 0.0, 0.0  # settle on the floor
             return
+        self.peek_side = 0
         recent = [s for s in self._samples if now - s[0] < 0.1] or self._samples[-2:]
         if len(recent) >= 2 and recent[-1][0] > recent[0][0]:
             dt = recent[-1][0] - recent[0][0]
@@ -212,9 +321,16 @@ class Pet:
         else:
             self.vx = self.vy = 0.0
         self.spin = self.vx * 0.12
-        self._hard_hit = math.hypot(self.vx, self.vy) > 2600  # a big throw makes BOT dizzy
+        speed = math.hypot(self.vx, self.vy)
+        self._hard_hit = speed > 2600  # a big throw makes BOT dizzy
         self.flying = True
+        if speed > 1200 and now > self.chase_until:  # count real throws (not games)
+            self._throws = [t for t in self._throws if now - t < 60] + [now]
+            if len(self._throws) >= 3:
+                self._throws = []
+                self._q.put(("angry",))
 
+    # -- physics -------------------------------------------------------------------
     def _limits(self):
         """Window positions where BOT's body touches the screen edges / taskbar."""
         side = (self.W - self.BW) / 2
@@ -223,15 +339,27 @@ class Pet:
 
     def _physics(self, dt: float) -> None:
         left, right, top, floor = self._limits()
+        now = time.perf_counter()
         if self.dragging:
             cx, cy = win_input.cursor_pos()
-            now = time.perf_counter()
             nx, ny = cx - self._grab_off[0], cy - self._grab_off[1]
             self._moved += math.hypot(nx - self.x, ny - self.y)
             self.x, self.y = nx, ny
             self._samples.append((now, float(cx), float(cy)))
             self._samples = [s for s in self._samples if now - s[0] < 0.15]
             self.angle *= 0.8
+        elif self.away_until:  # gone off-screen, sulking somewhere
+            pass
+        elif self.leaving and not self.flying:  # stomping off the screen
+            self.x += self.leaving * 420 * dt
+            self.y = floor - abs(math.sin(now * 14)) * self.H * 0.03
+            if self.x < left - self.W or self.x > right + self.W:
+                self.leaving = 0
+                self.away_until = now + random.uniform(60, 120)
+        elif self.peek_side:  # sliding behind the screen edge (peek-a-boo)
+            step = 260 * dt
+            self.x += max(-step, min(step, self._peek_x - self.x))
+            self.y = floor
         elif self.flying:
             self.vy += 2600 * dt  # gravity
             self.x += self.vx * dt
@@ -255,12 +383,12 @@ class Pet:
                     self.flying, self.vx = False, 0.0
                     if self._hard_hit:
                         self._hard_hit = False
-                        self._dizzy_until = time.perf_counter() + 3.2
+                        self._dizzy_until = now + 3.2
                         self._q.put(("say", random.choice(DIZZY), 3.0))
                         self._emit("dizzy")
         elif self.walking:
             self.x += self._walk_dir * 110 * dt
-            hop = abs(math.sin((time.perf_counter() - self._walk_t0) * 9)) * self.H * 0.05
+            hop = abs(math.sin((now - self._walk_t0) * 9)) * self.H * 0.04
             self.y = floor - hop
             if (self._walk_dir > 0 and self.x >= self._walk_to) or (self._walk_dir < 0 and self.x <= self._walk_to):
                 self.walking, self.y = False, floor
@@ -268,6 +396,17 @@ class Pet:
             self.y = min(self.y, floor)
             if self.y < floor - 1:  # somehow in the air: fall down
                 self.flying = True
+            elif now < self.chase_until:  # chase game: hop away from your mouse!
+                mx, my = win_input.cursor_pos()
+                cx, cy = self.x + self.W / 2, self.y + self.BODY_CY
+                if math.hypot(mx - cx, my - cy) < self.S * 2.1:
+                    away = 1 if cx >= mx else -1
+                    if (away > 0 and self.x > right - 40) or (away < 0 and self.x < left + 40):
+                        away = -away  # cornered: jump over you
+                    self.vx = away * random.uniform(700, 1100)
+                    self.vy = -random.uniform(900, 1300)
+                    self.spin = self.vx * 0.05
+                    self.flying = True
         if not self.flying and not self.dragging:
             self.angle *= 0.75  # stand back up
             if abs(self.angle) < 0.5:
@@ -277,12 +416,12 @@ class Pet:
         self._center = (self.x + self.W / 2, self.y + self.BODY_CY)
 
     def _hit(self, speed: float) -> None:
-        if speed > 1100:  # slammed into the edge of the screen
+        if speed > 1100 and time.perf_counter() > self.chase_until:  # slammed into the edge (not in chase)
             self._hard_hit = True
 
     def _maybe_walk(self, mood: str) -> None:
         now = time.perf_counter()
-        if mood != "idle" or self.flying or self.dragging or self.walking or now < self._next_walk:
+        if mood != "idle" or self.flying or self.dragging or self.walking or self.peek_side or now < self._next_walk:
             return
         self._next_walk = now + random.uniform(25, 50)
         left, right, _top, _floor = self._limits()
@@ -293,7 +432,7 @@ class Pet:
         self._walk_t0 = now
         self.walking = True
 
-    # -- window thread -------------------------------------------------------------
+    # -- main loop -------------------------------------------------------------------
     def _run(self) -> None:
         try:
             self._setup()
@@ -301,14 +440,20 @@ class Pet:
         except Exception as exc:
             log.warning("Desktop BOT disabled: %s", exc)
             return
+        self.music = MusicMeter()
         msg = wt.MSG()
         now = time.perf_counter()
         st = {"t0": now, "blink": 0.0, "next_blink": 2.0, "look": (0.0, 0.0), "react": None, "react_until": 0.0,
               "yawn_until": 0.0, "next_yawn": 6.0, "particles": [], "next_particle": 0.0, "idle": 0.0,
-              "idle_at": 0.0, "was_busy": False, "speech": "", "speech_until": 0.0, "love_asked": -99.0,
-              "next_question": now + random.uniform(90, 180), "next_cheer": now + 40, "typing": 0.0,
-              "last_tick": _last_input_tick(), "last_cursor": win_input.cursor_pos(), "type_check": 0.0,
-              "was_away": False, "last_feeling": "ok"}
+              "idle_at": 0.0, "was_busy": False, "speech": "", "speech_until": 0.0, "options": (),
+              "love_asked": -99.0, "next_question": now + random.uniform(60, 150), "next_cheer": now + 40,
+              "typing": 0.0, "last_tick": _last_input_tick(), "last_cursor": win_input.cursor_pos(),
+              "type_check": 0.0, "last_feeling": "ok", "music": 0.0, "music_check": 0.0, "dancing_since": 0.0,
+              "next_dance_line": 0.0, "beg_until": 0.0, "cry_until": 0.0, "next_beg": now + random.uniform(300, 600),
+              "cookie_t0": -99.0, "eat_until": 0.0, "swallow_until": 0.0, "hover_since": 0.0,
+              "next_peek": now + random.uniform(240, 480), "life_tick": now, "keys_seen": 0, "active_min": 0.0,
+              "next_reminder_min": 60.0, "reminder_i": 0, "next_night": 0.0, "next_hungry": now + 60,
+              "water_followup": 0.0, "was_focus": False}
         last_sig = None
         last_pos = None
         last_t = time.perf_counter()
@@ -325,68 +470,241 @@ class Pet:
             try:
                 now = time.perf_counter()
                 dt, last_t = min(0.05, now - last_t), now
+                self._life_tick(st)
                 self._physics(dt)
                 params = self._update(st)
                 self._maybe_walk(params["mood"])
+                self._maybe_peek(st, params["mood"])
                 sig = params["sig"]
                 pos = (int(self.x), int(self.y))
                 if sig != last_sig or self._last_img is None:
                     last_sig, last_pos = sig, pos
-                    self._last_img = self._transform(self._render(params))
+                    self._last_img = self._transform(self._render(params), params["tilt"])
                     self._push(self._last_img, params["alpha"])
                 elif pos != last_pos:  # only moved: reuse the picture
                     last_pos = pos
                     self._push(self._last_img, params["alpha"])
-                moving = self.dragging or self.flying or self.walking
+                moving = self.dragging or self.flying or self.walking or self.peek_side
                 fps = 60 if moving else (24 if params["active"] else (4 if params["mood"] == "asleep" else 10))
             except Exception:
                 log.exception("desktop pet frame failed")
                 fps = 1
             time.sleep(1 / fps)
 
+    def _speak(self, st: dict, text: str, seconds: float, options=()) -> None:
+        st["speech"], st["speech_until"], st["options"] = text, time.perf_counter() + seconds, tuple(options)
+
     def _command(self, cmd, st: dict) -> None:
         now = time.perf_counter()
         kind = cmd[0]
-        if kind == "color":
-            self._color = cmd[1]
-            self._body_cache = None
-        elif kind == "react":
+        life = self.life
+        if kind == "react":
             st["react"], st["react_until"] = cmd[1], now + cmd[2]
             if cmd[1] == "love":
                 self._burst(st, "heart", 5)
         elif kind == "say":
-            st["speech"], st["speech_until"] = cmd[1], now + cmd[2]
-        elif kind == "click":  # you clicked BOT: it feels loved
-            self._burst(st, "heart", 6)
-            st["react"], st["react_until"] = "love", now + 3.0
-            if now - st["love_asked"] < 8:
-                st["speech"], st["speech_until"] = random.choice(LOVE_YES), now + 3.5
-                st["love_asked"] = -99.0
+            self._speak(st, cmd[1], cmd[2])
+        elif kind == "angry":  # thrown too many times: storm off
+            self._dizzy_until = 0.0
+            st["beg_until"] = st["cry_until"] = 0.0
+            self.chase_until, self.peek_side = 0.0, 0
+            left, right, _top, _floor = self._limits()
+            self.leaving = 1 if self.x > (left + right) / 2 else -1
+            self._speak(st, random.choice(LEAVING), 3.5)
+            life.cheer(happy=-15)
+        elif kind == "click" and self.sulking:  # no pats until you say sorry
+            self._speak(st, random.choice(SULK), 8, SORRY_OPTS)
+        elif kind == "click":
+            life.cheer(happy=5)
+            if life.add_xp(2):
+                self._level_up(st)
+            if now < st["cry_until"]:  # pat while crying: forgiven
+                st["cry_until"] = 0.0
+                self._speak(st, random.choice(FORGIVE), 3.5)
+                st["react"], st["react_until"] = "love", now + 3
                 self._burst(st, "heart", 6)
-            else:
-                st["speech"], st["speech_until"] = random.choice(LOVE_ASK), now + 6.0
-                st["love_asked"] = now
+            elif now < st["beg_until"]:  # it asked for pats and you did!
+                st["beg_until"] = 0.0
+                self._speak(st, random.choice(BEG_YES), 3.0)
+                st["react"], st["react_until"] = "love", now + 3
+                self._burst(st, "heart", 8)
+                life.cheer(happy=8)
+            elif now < self.chase_until:  # caught it!
+                self.catches += 1
+                self._speak(st, f"Caught me! 😆 ({self.catches})", 2.0)
+                self._burst(st, "heart", 4)
+                if life.add_xp(3):
+                    self._level_up(st)
+            elif self.peek_side:
+                self._boo(st)
+            else:  # you clicked BOT: it feels loved
+                self._burst(st, "heart", 6)
+                st["react"], st["react_until"] = "love", now + 3.0
+                if now - st["love_asked"] < 8:
+                    self._speak(st, random.choice(LOVE_YES), 3.5)
+                    st["love_asked"] = -99.0
+                    self._burst(st, "heart", 6)
+                else:
+                    self._speak(st, random.choice(LOVE_ASK), 7.0, (("Yes! 💖", "love:yes"), ("Sooo much! 💕", "love:alot")))
+                    st["love_asked"] = now
             self._emit("petted")
+        elif kind == "answer":
+            self._answer(st, cmd[1])
+        elif kind == "feed":
+            if life.d["hunger"] >= 95:
+                self._speak(st, "I'm full! 🥴 Maybe later?", 3)
+            else:
+                st["cookie_t0"] = now
+                self._speak(st, "A cookie! For me?! 🍪🥺", 2.0)
+        elif kind == "chase":
+            self.chase_until, self.catches = now + cmd[1], 0
+            self.peek_side = 0
+            self._speak(st, "Catch me if you can! 🏃💨", 3)
+            st["react"], st["react_until"] = "excited", now + 1.5
+        elif kind == "focus":
+            self.focus_minutes = int(cmd[1])
+            self.focus_until = time.time() + self.focus_minutes * 60
+            self.peek_side = 0
+            self._speak(st, f"Focus mode ON! 🍅 {self.focus_minutes} minutes. I'll keep you company", 4)
+            st["react"], st["react_until"] = "excited", now + 1.5
+        elif kind == "focus_stop":
+            if self.focus_until:
+                self.focus_until = 0.0
+                self._speak(st, "Focus stopped. Good effort! 💙", 3)
+        elif kind == "outfit":
+            outfit = cmd[1]
+            if outfit in ("auto", "none", "santa", "headband", "cap") or life.unlocked(outfit):
+                life.d["outfit"] = outfit
+                life._dirty = True
+                life.save(force=True)
+                self._speak(st, "Do I look cute? 🥹✨", 3)
+                st["react"], st["react_until"] = "happy", now + 2
+            else:
+                self._speak(st, "I need to level up for that! 🥺", 3)
+        elif kind == "swallow":  # files dropped on BOT -> phone
+            names = [os.path.basename(p) for p in cmd[1]]
+            st["swallow_until"] = now + 1.6
+            self._speak(st, f"Nom nom! 😋 Sending {names[0] if len(names) == 1 else f'{len(names)} files'} "
+                            "to your phone 📲", 3)
+            for p in cmd[1]:
+                if self.send_file_fn:
+                    self.send_file_fn(p)
         elif kind == "bring":
             mx, _my = win_input.cursor_pos()
             left, right, _top, _floor = self._limits()
+            self.peek_side = 0
             self.x = float(max(left, min(right, mx - self.W / 2)))
             self.y = float(self.bounds[1] - self.H * 0.5)
             self.vx, self.vy, self.spin = 0.0, 300.0, 0.0
             self.dragging = self.walking = False
             self.flying = True
             st["react"], st["react_until"] = "happy", now + 2.5
-            st["speech"], st["speech_until"] = "Here I am! 🥰", now + 3.0
+            self._speak(st, "Here I am! 🥰", 3.0)
+
+    def _answer(self, st: dict, value: str) -> None:
+        now = time.perf_counter()
+        life = self.life
+        key, _, val = value.partition(":")
+        if key == "sorry":
+            if self.sulking or self.away_until or self.leaving:
+                self.sulking, self.leaving = False, 0
+                if self.away_until:  # come back right away, happy
+                    self.away_until = 1.0
+                    self._return_happy = True
+                self._speak(st, random.choice(FORGIVEN), 5)
+                st["react"], st["react_until"] = "love", now + 4
+                self._burst(st, "heart", 10)
+                life.cheer(happy=20)
+            else:
+                self._speak(st, "Aww, no need! I love you! 💖", 3)
+                st["react"], st["react_until"] = "love", now + 2
+            return
+        life.cheer(happy=3)
+        if life.add_xp(2):
+            self._level_up(st)
+        if key == "love":
+            self._speak(st, random.choice(LOVE_YES), 3.5)
+            st["react"], st["react_until"] = "love", now + 3
+            self._burst(st, "heart", 8)
+            return
+        self._speak(st, REPLIES.get((key, val), "Hehe, okay! 😊"), 4)
+        st["react"], st["react_until"] = "happy", now + 2
+        if key == "activity":
+            life.d["activity"], life.d["activity_at"] = val, time.time()
+        elif key == "water" and val == "no":
+            st["water_followup"] = now + 15 * 60
+        elif key == "likes" or key == "bff":
+            st["react"] = "love"
+            self._burst(st, "heart", 6)
+        elif key == "play" and val == "yes":
+            self.chase_until, self.catches = now + 45, 0
+        elif key == "focus" and val == "yes":
+            self.focus_minutes = 25
+            self.focus_until = time.time() + 25 * 60
+
+    def _level_up(self, st: dict) -> None:
+        lvl = self.life.level
+        unlocked = [o for o, need in {"bow": 2, "sunglasses": 3, "party": 4, "crown": 5}.items() if need == lvl]
+        extra = {"bow": " I unlocked a bow 🎀", "sunglasses": " I unlocked sunglasses 😎",
+                 "party": " I unlocked a party hat 🎉", "crown": " I unlocked a crown 👑"}.get(unlocked[0] if unlocked else "", "")
+        self._speak(st, f"Level up! I'm level {lvl} now! 🎉{extra}", 5)
+        self._burst(st, "sparkle", 8)
+        self._notify("BOT levelled up! 🎉", f"Level {lvl}.{extra}")
+
+    def _boo(self, st: dict) -> None:
+        """Jump out from behind the screen edge."""
+        side = self.peek_side
+        self.peek_side = 0
+        self.vx, self.vy = -side * 650.0, -950.0
+        self.flying = True
+        self._speak(st, random.choice(BOO), 2.5)
+        st["react"], st["react_until"] = "excited", time.perf_counter() + 2
+
+    def _maybe_peek(self, st: dict, mood: str) -> None:
+        now = time.perf_counter()
+        if self.peek_side:
+            cx, cy = win_input.cursor_pos()
+            near = math.hypot(cx - self._center[0], cy - self._center[1]) < self.S * 1.6
+            if near or now > self._peek_until:
+                self._boo(st)
+            return
+        if mood != "idle" or self.flying or self.dragging or self.walking or now < st["next_peek"] \
+                or self.focus_until or now < self.chase_until:
+            return
+        st["next_peek"] = now + random.uniform(300, 600)
+        left, right, _top, _floor = self._limits()
+        self.peek_side = random.choice((-1, 1))
+        hide = self.BW * 0.62  # most of the body goes off-screen, only the eyes peek out
+        self._peek_x = (left - hide) if self.peek_side < 0 else (right + hide)
+        self._peek_until = now + random.uniform(20, 40)
 
     def _burst(self, st: dict, kind: str, n: int) -> None:
         for _ in range(n):
             st["particles"].append([kind, random.uniform(-0.35, 0.35), random.uniform(-0.25, 0.0),
                                     random.uniform(-0.08, 0.08), random.uniform(-0.35, -0.18), random.uniform(1.2, 1.9)])
 
-    def _transform(self, img: Image.Image) -> Image.Image:
-        """Spin while flying, squish on landing."""
-        if abs(self.angle) > 0.5:
-            img = img.rotate(self.angle, resample=Image.BICUBIC, center=(self.W / 2, self.BODY_CY))
+    def _life_tick(self, st: dict) -> None:
+        """Once a minute: hunger, happiness, daily stats, saving."""
+        now = time.perf_counter()
+        if now - st["life_tick"] < 60:
+            return
+        minutes = (now - st["life_tick"]) / 60
+        st["life_tick"] = now
+        life = self.life
+        life.tick(minutes)
+        count = self.keys.count
+        life.add_keys(count - st["keys_seen"])
+        st["keys_seen"] = count
+        if st["idle"] < 60:
+            life.add_active(minutes)
+            st["active_min"] += minutes
+        life.save()
+
+    def _transform(self, img: Image.Image, tilt: float = 0.0) -> Image.Image:
+        """Spin while flying, sway while dancing, squish on landing."""
+        angle = self.angle + tilt
+        if abs(angle) > 0.5:
+            img = img.rotate(angle, resample=Image.BICUBIC, center=(self.W / 2, self.BODY_CY))
         if self.squish > 0.02:
             nw, nh = int(self.W * (1 + 0.18 * self.squish)), int(self.H * (1 - 0.22 * self.squish))
             out = Image.new("RGBA", (self.W, self.H), (0, 0, 0, 0))
@@ -402,7 +720,7 @@ class Pet:
         self.scale = scale
         self.S = int(104 * scale)                    # body size
         self.BW, self.BH = int(self.S * 0.98), int(self.S * 0.88)
-        self.W, self.H = int(self.S * 2.5), int(self.S * 1.85)  # room for the speech bubble
+        self.W, self.H = int(self.S * 2.6), int(self.S * 2.25)  # room for hats + speech bubble
         self.FOOT_GAP = int(self.S * 0.04)
         self.BODY_CY = self.H - self.FOOT_GAP - self.S * 0.08 - self.BH / 2
         wa = _Rect()
@@ -426,28 +744,43 @@ class Pet:
         user32.RegisterClassExW(ctypes.byref(wc))
         # Layered windows only catch the mouse on visible pixels, so clicks around BOT
         # still reach whatever is underneath.
-        ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | 0x00000010  # + WS_EX_ACCEPTFILES
         self._hwnd = user32.CreateWindowExW(ex, "BotDesktopPet", "BOT", WS_POPUP, int(self.x), int(self.y),
                                             self.W, self.H, None, None, hinst, None)
         if not self._hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
+        shell32.DragAcceptFiles(self._hwnd, True)
         BUBBLE.origin = self.center  # the bubble cursor flies out of the desktop BOT
 
     # -- behaviour -------------------------------------------------------------------
     def _update(self, st: dict) -> dict:
         now = time.perf_counter()
         t = now - st["t0"]
+        life = self.life
+        hour = datetime.now().hour
+        if self.away_until and now > self.away_until:  # back from sulking somewhere
+            self.away_until = 0.0
+            left, right, _top, floor = self._limits()
+            side = random.choice((-1, 1))
+            self.x, self.y = (left - self.W * 0.6) if side < 0 else (right + self.W * 0.6), floor
+            self._walk_to = random.uniform(left + self.W * 0.3, right - self.W * 0.3)
+            self._walk_dir, self._walk_t0, self.walking = (1 if self._walk_to > self.x else -1), now, True
+            self.sulking = not self._return_happy
+            self._return_happy = False
+            if self.sulking:
+                self._speak(st, random.choice(ASK_SORRY), 25, SORRY_OPTS)
+                st["next_sorry_ask"] = now + 40
         if now - st["idle_at"] > 0.5:
             idle = health.idle_seconds()
             if st["idle"] > 120 and idle < 2:  # you came back!
-                st["speech"], st["speech_until"] = random.choice(WELCOME), now + 4
+                self._speak(st, random.choice(WELCOME), 4)
                 st["react"], st["react_until"] = "excited", now + 2
             st["idle"], st["idle_at"] = idle, now
             feeling = self.health.get("feeling", "ok")
             if feeling != st["last_feeling"] and not st["speech"]:
                 line = {"hot": HOT, "low_battery": LOW_BATTERY, "charging": CHARGING}.get(feeling)
                 if line:
-                    st["speech"], st["speech_until"] = random.choice(line), now + 4
+                    self._speak(st, random.choice(line), 4)
             st["last_feeling"] = feeling
         feeling = st["last_feeling"]
 
@@ -461,30 +794,98 @@ class Pet:
             st["last_tick"], st["last_cursor"] = tick, cur
         typing = st["typing"] > 2.5
 
+        # music -> dance
+        if now - st["music_check"] > 0.1:
+            st["music_check"] = now
+            lvl = self.music.level()
+            st["music"] = st["music"] * 0.7 + lvl * 0.3
+        playing = st["music"] > 0.035
+        if playing and not st["dancing_since"]:
+            st["dancing_since"] = now
+        elif not playing:
+            st["dancing_since"] = 0.0
+        dancing = bool(st["dancing_since"]) and now - st["dancing_since"] > 1.0
+
         bx, by, bubble_on = BUBBLE.position()
         busy = bubble_on or self.busy_fn()
         if busy and not st["was_busy"]:  # a task just started
             st["react"], st["react_until"] = "excited", now + 1.2
         st["was_busy"] = busy
 
-        if self.dragging:
-            mood = "surprised"
-            if not st["speech"] or st["speech"] not in PICKED:
-                st["speech"], st["speech_until"] = random.choice(PICKED), now + 1.5
+        focusing = self.focus_until and time.time() < self.focus_until
+        if self.focus_until and not focusing:  # focus session finished
+            self.focus_until = 0.0
+            self._speak(st, "Break time! You did great 🎉", 6)
+            self._burst(st, "sparkle", 10)
+            self._burst(st, "heart", 4)
+            st["react"], st["react_until"] = "excited", now + 3
+            if life.add_xp(10):
+                self._level_up(st)
+            self._notify("Focus done 🍅", f"{self.focus_minutes} minutes done! Take a short break 🎉")
+        chasing = now < self.chase_until
+        if self.chase_until and not chasing and now - self.chase_until < 0.5:
+            self.chase_until = 0.0
+            self._speak(st, f"Game over! You caught me {self.catches} time{'s' if self.catches != 1 else ''} 🎉", 5)
+            life.cheer(happy=15)
+
+        # cookie: falling, then munching
+        cookie_age = now - st["cookie_t0"]
+        eating = 0.7 < cookie_age < 2.4
+        if 2.4 < cookie_age < 2.6:
+            st["cookie_t0"] = -99.0
+            life.cheer(happy=5, hunger=35)
+            if life.add_xp(5):
+                self._level_up(st)
+            self._speak(st, "Yum! 😋 Thank you! 💕", 3)
+            st["react"], st["react_until"] = "love", now + 2
+        swallowing = now < st["swallow_until"]
+
+        # pat begging -> crying
+        begging = now < st["beg_until"]
+        crying = now < st["cry_until"]
+        if st["beg_until"] and not begging and not crying and now - st["beg_until"] < 1:
+            st["beg_until"] = 0.0
+            st["cry_until"] = now + 9
+            crying = True
+            self._speak(st, random.choice(CRY), 9)
+            life.cheer(happy=-3)
+
+        if self.leaving:
+            mood = "angry"
+        elif self.dragging:
+            mood = "surprised" if not self.sulking else "sulk"
+            if st["speech"] not in PICKED and not self.sulking:
+                self._speak(st, random.choice(PICKED), 1.5)
         elif now < self._dizzy_until:
             mood = "dizzy"
         elif self.flying and abs(self.vx) + abs(self.vy) > 600:
             mood = "surprised"
+        elif eating or swallowing:
+            mood = "eat"
+        elif crying:
+            mood = "cry"
+        elif begging:
+            mood = "puppy"
         elif st["react"] and now < st["react_until"]:
             mood = st["react"]
+        elif self.sulking:
+            mood = "sulk"
+        elif chasing:
+            mood = "excited"
         elif busy:
             mood = "working"
+        elif dancing and not focusing:
+            mood = "dance"
+        elif focusing:
+            mood = "focus"
         elif feeling == "hot":
             mood = "sweaty"
         elif feeling == "low_battery":
             mood = "worried"
+        elif life.d["hunger"] < 20:
+            mood = "hungry"
         elif typing:
-            mood = "typing"          # happy while you work
+            mood = "typing"
         elif st["idle"] > 300:
             mood = "asleep"
         elif st["idle"] > 60:
@@ -492,21 +893,60 @@ class Pet:
         else:
             mood = "idle"
 
-        # chatter: cheers while typing, random cute questions while you're around
+        # chatter (one thing at a time, never while busy / playing / focusing)
         talking = now < st["speech_until"]
         if not talking:
-            st["speech"] = ""
-        if not talking and not self.flying and not self.dragging and mood not in ("asleep", "dizzy"):
-            if mood == "typing" and now > st["next_cheer"]:
-                st["speech"], st["speech_until"] = random.choice(TYPING_CHEERS), now + 3.5
+            st["speech"], st["options"] = "", ()
+        if self.sulking and not talking and not self.walking and now > st.get("next_sorry_ask", 0):
+            st["next_sorry_ask"] = now + 40
+            self._speak(st, random.choice(ASK_SORRY), 25, SORRY_OPTS)
+            talking = True
+        quiet = self.sulking or self.leaving or bool(self.away_until) or focusing or chasing or self.flying or self.dragging or self.peek_side or mood in ("asleep", "dizzy", "cry", "eat")
+        if not talking and not quiet and st["idle"] < 60:
+            today = date.today().isoformat()
+            if life.d.get("morning") != today and 5 <= hour < 12:
+                life.d["morning"] = today
+                life._dirty = True
+                self._speak(st, "Good morning! ☀️ Let's have a great day!", 5)
+                st["react"], st["react_until"] = "excited", now + 2
+            elif hour >= 21 and life.d.get("report_day") != today:
+                life.d["report_day"] = today
+                life._dirty = True
+                text = life.report()
+                self._speak(st, text, 9)
+                self._notify("Your day 📊", text)
+            elif st["water_followup"] and now > st["water_followup"]:
+                st["water_followup"] = 0.0
+                self._speak(st, "Did you drink that water? 💧👀", 5, (("Yes! 💧", "water:yes"), ("Oops 🙈", "water:no")))
+            elif st["active_min"] >= st["next_reminder_min"]:
+                st["next_reminder_min"] = st["active_min"] + 60
+                st["reminder_i"] += 1
+                self._speak(st, random.choice(WATER if st["reminder_i"] % 2 else STRETCH), 6)
+            elif (hour >= 23 or hour < 5) and now > st["next_night"]:
+                st["next_night"] = now + 30 * 60
+                self._speak(st, random.choice(NIGHT), 5)
+            elif life.d["hunger"] < 20 and now > st["next_hungry"]:
+                st["next_hungry"] = now + 10 * 60
+                self._speak(st, random.choice(HUNGRY), 5)
+            elif dancing and now > st["next_dance_line"]:
+                st["next_dance_line"] = now + 180
+                self._speak(st, random.choice(DANCE), 3)
+            elif mood in ("idle", "typing") and now > st["next_beg"]:
+                st["next_beg"] = now + random.uniform(480, 900)
+                st["beg_until"] = now + 10
+                self._speak(st, random.choice(BEG), 10)
+            elif mood == "typing" and now > st["next_cheer"]:
+                self._speak(st, random.choice(TYPING_CHEERS), 3.5)
                 st["next_cheer"] = now + random.uniform(80, 160)
-            elif st["idle"] < 30 and now > st["next_question"]:
-                st["speech"], st["speech_until"] = random.choice(QUESTIONS), now + 6
+            elif now > st["next_question"]:
+                q = pick_question(life)
+                opts = tuple((label, f"{q['key']}:{val}") for label, val in q.get("opts", ()))
+                self._speak(st, q["q"], 12 if opts else 6, opts)
                 st["next_question"] = now + random.uniform(150, 300)
         if mood == "drowsy" and t > st["next_yawn"]:
             st["yawn_until"], st["next_yawn"] = t + 1.8, t + random.uniform(7, 12)
             if not st["speech"] and random.random() < 0.3:
-                st["speech"], st["speech_until"] = random.choice(SLEEPY), now + 2
+                self._speak(st, random.choice(SLEEPY), 2)
         yawning = mood == "drowsy" and t < st["yawn_until"]
 
         # blink
@@ -521,52 +961,109 @@ class Pet:
         dx, dy = mx - cx, my - cy
         dist = max(1.0, math.hypot(dx, dy))
         target = (dx / dist * min(1.0, dist / 300), dy / dist * min(1.0, dist / 300))
-        if mood in ("asleep", "dizzy"):
+        if mood in ("asleep", "dizzy", "cry"):
             target = (0.0, 0.3)
+        if mood == "sulk":  # won't look at you
+            target = (-0.9 if dx > 0 else 0.9, 0.25)
+        if self.peek_side:  # peek towards the screen
+            target = (-self.peek_side * 0.9, 0.0)
         lx, ly = st["look"]
         st["look"] = (lx + (target[0] - lx) * 0.35, ly + (target[1] - ly) * 0.35)
 
+        # hovering your mouse over BOT shows its care stats
+        rx, ry = win_input.cursor_pos()
+        bx0 = self.x + (self.W - self.BW) / 2
+        by0 = self.y + self.BODY_CY - self.BH / 2
+        over = bx0 <= rx <= bx0 + self.BW and by0 <= ry <= by0 + self.BH and not self.dragging
+        if over and not st["hover_since"]:
+            st["hover_since"] = now
+        elif not over:
+            st["hover_since"] = 0.0
+        stats_text = ""
+        if over and now - st["hover_since"] > 0.8 and not st["speech"]:
+            stats_text = f"Lv {life.level} · 🍪 {round(life.d['hunger'])}% · 💖 {round(life.d['happy'])}%"
+        focus_text = ""
+        if focusing and not st["speech"] and not stats_text:
+            left_s = int(self.focus_until - time.time())
+            focus_text = f"🍅 {left_s // 60:02d}:{left_s % 60:02d}"
+
         # particles
         if t > st["next_particle"]:
-            st["next_particle"] = t + 1.0
+            st["next_particle"] = t + (0.5 if mood == "dance" else 1.0)
             if mood == "asleep":
                 st["particles"].append(["z", 0.3, -0.35, 0.06, -0.12, 2.4])
-            elif mood in ("love",):
+            elif mood == "love":
                 self._burst(st, "heart", 1)
+            elif mood == "dance":
+                self._burst(st, "note", 1)
             elif mood in ("typing", "excited", "happy") and random.random() < 0.6:
                 self._burst(st, "sparkle", 1)
             elif mood == "idle" and feeling == "charging" and random.random() < 0.3:
                 self._burst(st, "bolt", 1)
+        if mood == "eat" and random.random() < 0.3:
+            st["particles"].append(["crumb", random.uniform(-0.12, 0.12), 0.25, random.uniform(-0.1, 0.1), 0.15, 0.6])
         for p in st["particles"]:
             p[1] += p[3] / 12
             p[2] += p[4] / 12
             p[5] -= 1 / 12
         st["particles"] = [p for p in st["particles"] if p[5] > 0]
 
-        target_alpha = 255 if self.wanted else 0
+        target_alpha = 255 if self.wanted and not self.away_until else 0
         self._alpha += (target_alpha - self._alpha) * 0.35
         if abs(target_alpha - self._alpha) < 3:
             self._alpha = float(target_alpha)
 
-        openness = {"asleep": 0.0, "drowsy": 0.5, "sweaty": 0.8}.get(mood, 1.0)
+        if mood == "angry" and random.random() < 0.08:
+            st["particles"].append(["anger", random.uniform(0.2, 0.35), -0.3, 0.0, -0.05, 0.8])
+        openness = {"asleep": 0.0, "drowsy": 0.5, "sweaty": 0.8, "focus": 0.85, "sulk": 0.7}.get(mood, 1.0)
         if yawning:
             openness = 0.05
         openness *= 1 - blink
-        bounce = 0.0
+        bounce, tilt = 0.0, 0.0
         if mood in ("typing", "excited", "happy", "love"):
             bounce = abs(math.sin(t * (9 if mood == "typing" else 7))) * 0.05
-        breathe = math.sin(t * 2.2) * 0.012 if mood in ("idle", "drowsy", "asleep") else 0.0
+        if mood == "dance":
+            beat = t * 6.5
+            bounce = abs(math.sin(beat)) * (0.04 + min(0.05, st["music"] * 0.2))
+            tilt = math.sin(beat / 2) * 8
+        if mood == "puppy":
+            tilt = math.sin(t * 25) * 1.2  # trembling a little
+        breathe = math.sin(t * 2.2) * 0.012 if mood in ("idle", "drowsy", "asleep", "hungry") else 0.0
+
+        outfit = self._outfit(mood, feeling, focusing, hour)
         show_speech = st["speech"] if not (self.flying and not self.dragging) else ""
-        active = bool(st["particles"]) or blink > 0 or bounce > 0 or mood in ("dizzy", "surprised", "sweaty") \
-            or abs(target_alpha - self._alpha) > 0 or yawning
+        options = st["options"] if show_speech else ()
+        cookie_y = None
+        if 0 <= cookie_age < 0.7:
+            cookie_y = cookie_age / 0.7
+        active = bool(st["particles"]) or blink > 0 or bounce > 0 or tilt != 0 or cookie_y is not None \
+            or mood in ("dizzy", "surprised", "sweaty", "cry", "eat", "puppy", "angry") \
+            or abs(target_alpha - self._alpha) > 0 or yawning or bool(focus_text)
+        chomp = int(t * 7) % 2 if mood == "eat" else 0
         sig = (mood, round(openness, 1), round(st["look"][0] * 6), round(st["look"][1] * 6), yawning,
-               round(bounce * 200), round(breathe * 400), int(self._alpha), show_speech,
+               round(bounce * 200), round(breathe * 400), round(tilt), int(self._alpha), show_speech, options,
+               stats_text, focus_text, outfit, chomp, None if cookie_y is None else round(cookie_y * 20),
                tuple((p[0], round(p[1] * 40), round(p[2] * 40)) for p in st["particles"]),
-               (int(t * 2) if mood == "sweaty" else 0), (int(t * 12) if mood == "dizzy" else 0),
-               round(self.angle), round(self.squish * 10), self._color)
+               (int(t * 2) if mood == "sweaty" else 0), (int(t * 12) if mood in ("dizzy", "cry") else 0),
+               round(self.angle), round(self.squish * 10))
         return {"mood": mood, "open": openness, "look": st["look"], "yawn": yawning, "bounce": bounce,
-                "breathe": breathe, "alpha": self._alpha, "sig": sig, "active": active, "t": t,
-                "particles": list(st["particles"]), "speech": show_speech}
+                "breathe": breathe, "tilt": tilt, "alpha": self._alpha, "sig": sig, "active": active, "t": t,
+                "particles": list(st["particles"]), "speech": show_speech, "options": options,
+                "stats": stats_text, "focus": focus_text, "outfit": outfit, "chomp": chomp, "cookie": cookie_y}
+
+    def _outfit(self, mood: str, feeling: str, focusing: bool, hour: int) -> str:
+        choice = self.life.d.get("outfit", "auto")
+        if choice != "auto":
+            return choice if self.life.unlocked(choice) else "none"
+        if focusing:
+            return "headband"
+        if mood in ("asleep", "drowsy") and (hour >= 22 or hour < 6):
+            return "cap"
+        if datetime.now().month == 12:
+            return "santa"
+        if feeling == "charging" and self.life.unlocked("sunglasses") and mood in ("idle", "typing", "dance"):
+            return "sunglasses"
+        return "none"
 
     # -- drawing -----------------------------------------------------------------------
     def _body(self) -> Image.Image:
@@ -600,13 +1097,16 @@ class Pet:
             self._shadow_cache = sh.filter(ImageFilter.GaussianBlur(5 * SS))
         return self._shadow_cache
 
-    def _speech_bubble(self, text: str) -> Image.Image:
-        if text not in self._bubble_cache:
-            font = _font(int(13.5 * self.scale * SS))
-            pad = int(10 * self.scale * SS)
+    def _speech_bubble(self, text: str, options=(), pill: bool = False):
+        """Speech bubble (optionally with answer buttons). Returns (image, [(x0,y0,x1,y1,value)...])."""
+        key = (text, options, pill)
+        if key not in self._bubble_cache:
+            font = _font(int((12.5 if pill else 13.5) * self.scale * SS))
+            small = _font(int(12 * self.scale * SS))
+            pad = int((7 if pill else 10) * self.scale * SS)
             max_w = self.W * SS - 2 * pad - 8 * SS
-            words, lines, cur = text.split(), [], ""
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            words, lines, cur = text.split(), [], ""
             for w in words:  # wrap to the window width
                 trial = (cur + " " + w).strip()
                 if cur and probe.textlength(trial, font=font) > max_w:
@@ -617,23 +1117,51 @@ class Pet:
             lines.append(cur)
             lh = int(font.size * 1.3)
             tw = int(max(probe.textlength(line, font=font) for line in lines))
-            bw, bh = tw + 2 * pad, lh * len(lines) + pad * 2 - int(lh * 0.2)
-            tail = int(9 * self.scale * SS)
+            # answer buttons, wrapped into rows
+            chip_pad, gap = int(8 * self.scale * SS), int(6 * self.scale * SS)
+            ch = int(small.size * 1.7)
+            rows, row, row_w = [], [], 0
+            for label, value in options:
+                cw = int(probe.textlength(label, font=small)) + 2 * chip_pad
+                if row and row_w + gap + cw > max_w:
+                    rows.append(row)
+                    row, row_w = [], 0
+                row.append((label, value, cw))
+                row_w += (gap if len(row) > 1 else 0) + cw
+            if row:
+                rows.append(row)
+            rows_w = max([sum(c[2] for c in r) + gap * (len(r) - 1) for r in rows] or [0])
+            bw = max(tw, rows_w) + 2 * pad
+            bh = lh * len(lines) + pad * 2 - int(lh * 0.2) + (len(rows) * (ch + gap) + gap if rows else 0)
+            tail = 0 if pill else int(9 * self.scale * SS)
             img = Image.new("RGBA", (bw + 6 * SS, bh + tail + 6 * SS), (0, 0, 0, 0))
             d = ImageDraw.Draw(img, "RGBA")
+            fill = (255, 255, 255, 245) if not pill else (20, 30, 60, 220)
             d.rounded_rectangle((3 * SS, 3 * SS, 3 * SS + bw, 3 * SS + bh), radius=int(14 * self.scale * SS),
-                                fill=(255, 255, 255, 248), outline=_mix(self._color, (0, 0, 0), 0.1) + (255,),
-                                width=int(1.6 * SS))
-            mid = 3 * SS + bw // 2
-            d.polygon([(mid - tail, 3 * SS + bh - 2 * SS), (mid + tail, 3 * SS + bh - 2 * SS),
-                       (mid, 3 * SS + bh + tail)], fill=(255, 255, 255, 248))
+                                fill=fill, outline=_mix(self._color, (0, 0, 0), 0.1) + (255,), width=int(1.6 * SS))
+            if tail:
+                mid = 3 * SS + bw // 2
+                d.polygon([(mid - tail, 3 * SS + bh - 2 * SS), (mid + tail, 3 * SS + bh - 2 * SS),
+                           (mid, 3 * SS + bh + tail)], fill=fill)
+            ink = (30, 36, 64, 255) if not pill else (240, 245, 255, 255)
             for i, line in enumerate(lines):
-                d.text((3 * SS + pad, 3 * SS + pad + i * lh), line, font=font, fill=(30, 36, 64, 255),
-                       embedded_color=True)
-            if len(self._bubble_cache) > 40:
+                d.text((3 * SS + pad, 3 * SS + pad + i * lh), line, font=font, fill=ink, embedded_color=True)
+            chips = []
+            y = 3 * SS + pad + lh * len(lines) + gap
+            for r in rows:
+                x = 3 * SS + pad
+                for label, value, cw in r:
+                    d.rounded_rectangle((x, y, x + cw, y + ch), radius=ch // 2, fill=_mix(self._color, WHITE, 0.82) + (255,),
+                                        outline=_mix(self._color, (0, 0, 0), 0.05) + (255,), width=int(1.4 * SS))
+                    d.text((x + chip_pad, y + ch / 2), label, font=small, fill=(30, 36, 64, 255), anchor="lm",
+                           embedded_color=True)
+                    chips.append((x, y, x + cw, y + ch, value))
+                    x += cw + gap
+                y += ch + gap
+            if len(self._bubble_cache) > 60:
                 self._bubble_cache.clear()
-            self._bubble_cache[text] = img
-        return self._bubble_cache[text]
+            self._bubble_cache[key] = (img, chips)
+        return self._bubble_cache[key]
 
     def _render(self, p: dict) -> Image.Image:
         W, H = self.W * SS, self.H * SS
@@ -643,12 +1171,11 @@ class Pet:
         mood, t = p["mood"], p["t"]
         lift = int(p["bounce"] * self.S * SS)
         x0 = (W - bw) // 2
-        y0 = int(H - self.FOOT_GAP * SS - body.height) - lift
+        y0 = int(H - self.FOOT_GAP * SS - self.S * 0.08 * SS - bh) - lift
         if not self.flying:  # soft shadow on the floor
             sh = self._shadow()
             img.alpha_composite(sh, ((W - sh.width) // 2, int(H - self.FOOT_GAP * SS - sh.height * 0.62)))
-        # breathing: a gentle squash and stretch
-        if p["breathe"]:
+        if p["breathe"]:  # gentle squash and stretch
             k = 1 + p["breathe"]
             b2 = body.resize((int(body.width / k), int(body.height * k)), Image.BILINEAR)
             img.alpha_composite(b2, ((W - b2.width) // 2, y0 + body.height - b2.height))
@@ -657,18 +1184,26 @@ class Pet:
         d = ImageDraw.Draw(img, "RGBA")
         cx = W / 2
         lx, ly = p["look"][0] * bw * 0.06, p["look"][1] * bh * 0.05
+        if mood == "puppy":
+            lx += math.sin(t * 30) * bw * 0.004
         ey = y0 + bh * 0.5 + ly
-        er = bw * 0.13  # big round eyes
+        er = bw * 0.13
+        eyes = []
 
         for side in (-1, 1):
             ex = cx + side * bw * 0.19 + lx
+            eyes.append((ex, ey))
             if mood == "dizzy":  # black spiral eyes
-                ex, eyy = cx + side * bw * 0.2, y0 + bh * 0.46
+                exx, eyy = cx + side * bw * 0.19, y0 + bh * 0.5
                 spin = t * 7 * side
-                pts = [(ex + math.cos(spin + a / 5) * er * 1.05 * a / 36, eyy + math.sin(spin + a / 5) * er * 1.05 * a / 36)
+                pts = [(exx + math.cos(spin + a / 5) * er * 1.05 * a / 36, eyy + math.sin(spin + a / 5) * er * 1.05 * a / 36)
                        for a in range(37)]
                 d.line(pts, fill=INK + (255,), width=int(3.2 * SS), joint="curve")
-            elif mood in ("typing", "happy", "excited"):  # ^ ^ happy eyes
+            elif mood == "cry":  # squeezed > < eyes
+                w_, h_ = er * 0.8, er * 0.55
+                d.line([(ex + side * w_, ey - h_), (ex - side * w_ * 0.2, ey), (ex + side * w_, ey + h_)],
+                       fill=INK + (255,), width=int(3.4 * SS), joint="curve")
+            elif mood in ("typing", "happy", "excited", "dance", "eat"):  # ^ ^ happy eyes
                 d.arc((ex - er, ey - er * 0.7, ex + er, ey + er * 1.1), 200, 340, fill=INK + (255,), width=int(4 * SS))
             elif mood == "love":  # heart eyes
                 d.polygon(_heart(ex, ey, er * 1.05), fill=(255, 77, 141, 255))
@@ -676,39 +1211,61 @@ class Pet:
             elif p["open"] < 0.12:  # closed: sleeping, blinking, yawning
                 d.arc((ex - er * 0.8, ey - er * 0.5, ex + er * 0.8, ey + er * 0.5), 20, 160, fill=INK + (255,),
                       width=int(3.2 * SS))
-            else:  # big glossy anime-style eyes: tall oval, blue shine at the bottom, two sparkles
-                r = er * (1.18 if mood == "surprised" else 1.0)
+            else:  # big glossy anime-style eyes
+                r = er * (1.18 if mood == "surprised" else (1.14 if mood == "puppy" else 1.0))
                 ry = r * 1.2 * max(0.2, p["open"])
                 d.ellipse((ex - r, ey - ry, ex + r, ey + ry), fill=INK + (255,))
                 if p["open"] > 0.45:
-                    # a soft blue glow low in the eye (gives it depth)
                     d.ellipse((ex - r * 0.5, ey + ry * 0.38, ex + r * 0.5, ey + ry * 0.86), fill=(70, 110, 230, 95))
-                    # big sparkle (top) + small sparkle (bottom) + a tiny twinkle
-                    hr = r * 0.46
+                    hr = r * (0.52 if mood == "puppy" else 0.46)
                     d.ellipse((ex - r * 0.62, ey - ry * 0.72, ex - r * 0.62 + hr * 2, ey - ry * 0.72 + hr * 1.9),
                               fill=WHITE + (255,))
-                    sr = r * 0.2
+                    sr = r * (0.26 if mood == "puppy" else 0.2)
                     d.ellipse((ex + r * 0.22, ey + ry * 0.18, ex + r * 0.22 + sr * 2, ey + ry * 0.18 + sr * 2),
                               fill=WHITE + (240,))
                     tw = r * 0.09
                     d.ellipse((ex + r * 0.42, ey - ry * 0.45, ex + r * 0.42 + tw * 2, ey - ry * 0.45 + tw * 2),
                               fill=WHITE + (220,))
-                if mood == "drowsy" or (mood == "sweaty" and p["open"] < 0.9):  # sleepy eyelid in body colour
+                    if mood == "puppy":  # watery shine at the bottom
+                        d.arc((ex - r * 0.8, ey - ry * 0.2, ex + r * 0.8, ey + ry * 0.95), 30, 150,
+                              fill=(160, 210, 255, 230), width=int(2.4 * SS))
+                if mood in ("drowsy", "focus", "angry", "sulk") or (mood == "sweaty" and p["open"] < 0.9):
+                    # eyelid in body colour
                     k = (ey - ry - y0) / bh
                     lid = _mix(_mix(self._color, WHITE, 0.22), _mix(self._color, (0, 0, 0), 0.14), max(0.0, min(1.0, k)))
-                    # cover the top half of the eye with a lid, then draw the lid's edge
-                    d.chord((ex - r - 3, ey - ry - 3, ex + r + 3, ey + ry + 3), 180, 360, fill=lid + (255,))
-                    d.line([(ex - r, ey), (ex + r, ey)], fill=INK + (255,), width=int(2.6 * SS))
-                if mood == "worried":  # little worried brows
+                    cover = 180 if mood not in ("focus", "angry", "sulk") else 205
+                    d.chord((ex - r - 3, ey - ry - 3, ex + r + 3, ey + ry + 3), cover, 360 - (cover - 180),
+                            fill=lid + (255,))
+                    if mood != "focus":
+                        d.line([(ex - r, ey), (ex + r, ey)], fill=INK + (255,), width=int(2.6 * SS))
+                if mood in ("worried", "hungry", "puppy"):  # little worried brows
                     d.line([(ex - side * r * 0.9, ey - r * 1.55), (ex + side * r * 0.5, ey - r * 1.25)],
                            fill=INK + (255,), width=int(2.4 * SS))
+                if mood == "angry":  # angry brows: low in the middle
+                    d.line([(ex + side * r * 0.95, ey - r * 1.7), (ex - side * r * 0.65, ey - r * 1.15)],
+                           fill=INK + (255,), width=int(3.4 * SS))
 
-        # blush (always a little, lots when loved/happy)
-        blush = 165 if mood in ("love", "happy", "typing", "excited") else 105
+        # tears
+        if mood == "cry":
+            for side in (-1, 1):
+                ex = cx + side * bw * 0.19 + lx
+                for k in range(3):
+                    ph = ((t * 1.6) + k / 3) % 1.0
+                    tx = ex + side * er * 0.7
+                    ty = ey + er * 0.4 + ph * bh * 0.45
+                    r = er * (0.22 - 0.05 * ph)
+                    d.polygon([(tx, ty - r * 1.9), (tx - r, ty), (tx + r, ty)], fill=TEAR + (int(230 * (1 - ph)),))
+                    d.ellipse((tx - r, ty - r, tx + r, ty + r), fill=TEAR + (int(230 * (1 - ph)),))
+
+        # blush
+        blush = 165 if mood in ("love", "happy", "typing", "excited", "dance", "puppy") else 105
+        puff = 1.35 if mood in ("angry", "sulk") else 1.0  # puffed cheeks
+        cheek = (255, 80, 90) if mood == "angry" else PINK
         for side in (-1, 1):
             bcx, bcy = cx + side * bw * 0.34 + lx * 0.5, ey + bh * 0.15
-            d.ellipse((bcx - bw * 0.085, bcy - bh * 0.045, bcx + bw * 0.085, bcy + bh * 0.045), fill=PINK + (blush,))
-            if mood == "love":  # shy lines
+            d.ellipse((bcx - bw * 0.085 * puff, bcy - bh * 0.045 * puff, bcx + bw * 0.085 * puff, bcy + bh * 0.045 * puff),
+                      fill=cheek + (190 if mood in ("angry", "sulk") else blush,))
+            if mood in ("love", "puppy"):  # shy lines
                 for i in (-1, 0, 1):
                     xx = bcx + i * bw * 0.035
                     d.line([(xx + bw * 0.012, bcy - bh * 0.03), (xx - bw * 0.012, bcy + bh * 0.03)],
@@ -717,21 +1274,40 @@ class Pet:
         # mouth
         mx, my = cx + lx * 0.4, y0 + bh * 0.67 + ly * 0.4
         mw = bw * 0.16
-        if p["yawn"] or mood in ("surprised", "dizzy"):
+        if mood == "eat":
+            if p["chomp"]:
+                d.ellipse((mx - mw * 0.45, my - mw * 0.35, mx + mw * 0.45, my + mw * 0.7), fill=INK + (255,))
+            else:
+                d.line([(mx - mw * 0.4, my + mw * 0.15), (mx + mw * 0.4, my + mw * 0.15)], fill=INK + (255,),
+                       width=int(3 * SS))
+        elif mood == "angry":  # grumpy frown
+            d.arc((mx - mw * 0.55, my + mw * 0.05, mx + mw * 0.55, my + mw * 0.75), 200, 340, fill=INK + (255,),
+                  width=int(3 * SS))
+        elif mood == "sulk":  # little pout
+            d.ellipse((mx - mw * 0.16, my + mw * 0.12, mx + mw * 0.16, my + mw * 0.42), fill=INK + (255,))
+        elif mood == "cry":  # wobbly "waah" mouth
+            d.chord((mx - mw * 0.55, my - mw * 0.1, mx + mw * 0.55, my + mw * 0.9), 180, 360, fill=INK + (255,))
+        elif p["yawn"] or mood in ("surprised", "dizzy"):
             r = mw * (0.42 if p["yawn"] else 0.28)
             d.ellipse((mx - r, my - r * 0.7, mx + r, my + r * 1.2), fill=INK + (255,))
-        elif mood in ("typing", "happy", "excited", "love"):  # open happy smile with tongue
-            box = (mx - mw * 0.75, my - mw * 0.45, mx + mw * 0.75, my + mw * 0.8)
-            d.chord(box, 0, 180, fill=INK + (255,))
+        elif mood in ("typing", "happy", "excited", "love", "dance"):  # open happy smile with tongue
+            d.chord((mx - mw * 0.75, my - mw * 0.45, mx + mw * 0.75, my + mw * 0.8), 0, 180, fill=INK + (255,))
             d.chord((mx - mw * 0.42, my + mw * 0.05, mx + mw * 0.42, my + mw * 0.78), 0, 180, fill=(255, 120, 150, 255))
-        elif mood in ("worried", "sad"):
+        elif mood in ("worried", "sad", "hungry"):
             d.arc((mx - mw * 0.6, my, mx + mw * 0.6, my + mw * 0.8), 200, 340, fill=INK + (255,), width=int(2.6 * SS))
+        elif mood == "puppy":  # tiny pouty mouth
+            d.arc((mx - mw * 0.3, my + mw * 0.1, mx + mw * 0.3, my + mw * 0.55), 200, 340, fill=INK + (255,),
+                  width=int(2.4 * SS))
         elif mood == "asleep":
             d.ellipse((mx - mw * 0.12, my, mx + mw * 0.12, my + mw * 0.24), fill=INK + (200,))
         else:  # cute "ω" cat mouth
             q = mw * 0.3
             d.arc((mx - 2 * q, my - q, mx, my + q), 0, 180, fill=INK + (255,), width=int(2.6 * SS))
             d.arc((mx, my - q, mx + 2 * q, my + q), 0, 180, fill=INK + (255,), width=int(2.6 * SS))
+
+        # outfit
+        if p["outfit"] != "none":
+            pet_outfits.draw(d, p["outfit"], x0, y0, bw, bh, eyes, er, SS, t)
 
         # extras
         if mood == "dizzy":  # stars circling the head
@@ -745,6 +1321,14 @@ class Pet:
             r = 6 * SS * self.scale
             d.polygon([(sx, sy - r * 1.8), (sx - r, sy), (sx + r, sy)], fill=(140, 210, 255, 230))
             d.ellipse((sx - r, sy - r, sx + r, sy + r), fill=(140, 210, 255, 230))
+        if p["cookie"] is not None:  # a cookie falling into BOT's mouth
+            ck = 11 * SS * self.scale
+            cyk = (y0 - bh * 0.6) + (my - (y0 - bh * 0.6)) * p["cookie"]
+            d.ellipse((cx - ck, cyk - ck, cx + ck, cyk + ck), fill=(205, 140, 70, 255), outline=(160, 100, 45, 255),
+                      width=int(1.5 * SS))
+            for ox, oy in ((-0.4, -0.3), (0.35, -0.1), (-0.1, 0.4), (0.3, 0.45)):
+                r = ck * 0.17
+                d.ellipse((cx + ox * ck - r, cyk + oy * ck - r, cx + ox * ck + r, cyk + oy * ck + r), fill=(90, 50, 25, 255))
         for kind, px, py, _vx, _vy, life in p["particles"]:
             a = int(255 * max(0.0, min(1.0, life / 1.6)))
             x, y = cx + px * bw * 1.4, y0 + bh * 0.2 + py * bh * 1.4
@@ -756,15 +1340,26 @@ class Pet:
             elif kind == "bolt":
                 d.polygon([(x, y - s), (x - s * 0.5, y + s * 0.1), (x, y + s * 0.1), (x - s * 0.25, y + s),
                            (x + s * 0.6, y - s * 0.25), (x + s * 0.1, y - s * 0.25)], fill=(255, 210, 80, a))
+            elif kind == "crumb":
+                d.ellipse((x - s * 0.2, y - s * 0.2, x + s * 0.2, y + s * 0.2), fill=(160, 100, 45, a))
+            elif kind == "anger":
+                d.text((x, y), "💢", font=_font(int(16 * SS * self.scale)), anchor="mm", embedded_color=True)
+            elif kind == "note":
+                d.text((x, y), "🎵", font=_font(int(16 * SS * self.scale)), anchor="mm", embedded_color=True)
             else:
                 d.text((x, y), "z", font=_font(int(15 * SS * self.scale)), fill=_mix(self._color, (0, 0, 0), 0.3) + (a,),
                        anchor="mm")
-        # speech bubble above BOT
-        if p["speech"]:
-            sb = self._speech_bubble(p["speech"])
+
+        # speech bubble / stats / focus timer above BOT (higher if wearing a hat)
+        self._chips = []
+        hat = pet_outfits.HAT_HEIGHT * bh if pet_outfits.has_hat(p["outfit"]) else 0
+        label = p["speech"] or p["stats"] or p["focus"]
+        if label:
+            sb, chips = self._speech_bubble(label, p["options"], pill=not p["speech"])
             bx = int(max(0, min(W - sb.width, cx - sb.width / 2)))
-            by = max(0, y0 - sb.height - int(2 * SS))
+            by = max(0, int(y0 - hat - sb.height - 2 * SS))
             img.alpha_composite(sb, (bx, by))
+            self._chips = [((bx + a) / SS, (by + b) / SS, (bx + c) / SS, (by + e) / SS, v) for a, b, c, e, v in chips]
         return img.resize((self.W, self.H), Image.LANCZOS)
 
     def _push(self, img: Image.Image, alpha: float) -> None:

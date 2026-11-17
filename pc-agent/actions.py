@@ -381,6 +381,13 @@ ACTIONS = {
     "double_click": double_click,
     "right_click": right_click,
     "battery": battery,
+    "say_sorry": lambda _m: (True, _pet().apologize()),
+    "feed_bot": lambda _m: (_pet().feed(), (True, "Giving BOT a cookie 🍪"))[1],
+    "play_chase": lambda _m: (_pet().start_chase(45), (True, "Catch BOT on your PC screen! 🏃 (45 s)"))[1],
+    "focus_start": lambda m: (_pet().start_focus(int(m.arg or 25)),
+                              (True, f"Focus mode: {int(m.arg or 25)} minutes 🍅 BOT will keep you company"))[1],
+    "focus_stop": lambda _m: (_pet().stop_focus(), (True, "Focus stopped"))[1],
+    "daily_report": lambda _m: (True, _pet().show_report()),
     "pet_off": lambda _m: (True, "Desktop BOT is hiding 🙈"),  # switches flipped in bot_agent
     "pet_on": lambda _m: (True, "Desktop BOT is back! 👋"),
     "bubble_off": lambda _m: (True, "BOT cursor hidden"),   # the switch itself is flipped in bot_agent
@@ -403,7 +410,13 @@ POINTER_LABELS = {
     "scroll_up": "Scrolling up", "scroll_down": "Scrolling down",
 }
 # No bubble for these (screen is about to lock / turn off, or the text is too long).
-NO_BUBBLE = {"lock", "shutdown", "restart", "sleep", "help", "bubble_off"}
+NO_BUBBLE = {"lock", "shutdown", "restart", "sleep", "help", "bubble_off", "feed_bot", "play_chase", "say_sorry",
+             "focus_start", "focus_stop", "daily_report"}
+
+
+def _pet():
+    from desktop_pet import PET  # imported lazily (desktop_pet is only needed on the PC agent)
+    return PET
 
 
 def execute(m: Match):

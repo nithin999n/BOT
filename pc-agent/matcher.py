@@ -285,6 +285,9 @@ def match(raw: str) -> Match | None:
     m = match_simple(t) or _m_open_unknown(t) or _m_bare(t)
     if m and m.intent in ("scroll_up", "scroll_down"):  # "come down a little" / "scroll down a lot"
         m.arg = "little" if longest(t, LITTLE) else "lot" if longest(t, A_LOT) else ""
+    if m and m.intent == "focus_start":  # "focus 45 minutes" (default 25)
+        num = re.search(r"\d+", raw)
+        m.arg = str(max(1, min(180, int(num.group())))) if num else "25"
     if m and m.intent in KEY_ACTIONS:
         # Only short commands: "send it" presses Enter, but "send a mail to rahul" is a different task.
         if len(t.split()) > 4:

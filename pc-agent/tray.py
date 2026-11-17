@@ -43,8 +43,9 @@ class Tray:
     """Callbacks are plain functions; they run on the tray's own thread."""
 
     def __init__(self, *, pet, bubble, cfg: dict, toggle_pet, toggle_bubble, toggle_walkaway,
-                 bring_pet, autostart_on, set_autostart, open_files, quit_bot):
+                 bring_pet, autostart_on, set_autostart, open_files, quit_bot, extras=()):
         self.pet, self.bubble, self.cfg = pet, bubble, cfg
+        self.extras = list(extras)  # [(label, callback)] for the "BOT fun" section
         self._cb = dict(toggle_pet=toggle_pet, toggle_bubble=toggle_bubble, toggle_walkaway=toggle_walkaway,
                         bring_pet=bring_pet, autostart_on=autostart_on, set_autostart=set_autostart,
                         open_files=open_files, quit_bot=quit_bot)
@@ -57,6 +58,14 @@ class Tray:
             except Exception:
                 log.exception("tray action %s failed", name)
             self.refresh()
+        return run
+
+    def _wrap(self, fn):
+        def run(*_args):
+            try:
+                fn()
+            except Exception:
+                log.exception("tray extra failed")
         return run
 
     def _show_pin(self, *_args) -> None:
@@ -72,6 +81,7 @@ class Tray:
             M(lambda _i: f"{'Hide' if self.pet.wanted else 'Show'} desktop {name}",
               self._safe("toggle_pet"), default=True),       # left-click
             M(f"Bring {name} here", self._safe("bring_pet"), enabled=lambda _i: self.pet.wanted),
+            *[M(label, self._wrap(fn)) for label, fn in self.extras],
             pystray.Menu.SEPARATOR,
             M("Desktop BOT", self._safe("toggle_pet"), checked=lambda _i: self.pet.wanted),
             M("BOT cursor (blue bubble)", self._safe("toggle_bubble"), checked=lambda _i: self.bubble.wanted),
