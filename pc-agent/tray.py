@@ -19,22 +19,23 @@ log = logging.getLogger("bot")
 
 
 def make_icon(color=(79, 195, 255), size=64) -> Image.Image:
-    """A tiny BOT face for the tray."""
+    """A tiny blue blob BOT with round black eyes, for the tray."""
     s = size * 4
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.line([(s / 2, s * 0.06), (s / 2, s * 0.2)], fill=(60, 80, 140, 255), width=s // 18)
-    d.ellipse((s / 2 - s * 0.07, s * 0.0, s / 2 + s * 0.07, s * 0.14), fill=color + (255,))
-    d.rounded_rectangle((s * 0.06, s * 0.18, s * 0.94, s * 0.94), radius=s * 0.26, fill=(26, 40, 86, 255),
-                        outline=color + (255,), width=s // 20)
-    d.rounded_rectangle((s * 0.16, s * 0.28, s * 0.84, s * 0.84), radius=s * 0.18, fill=(7, 12, 32, 255))
-    light = tuple(int(c + (255 - c) * 0.6) for c in color)
-    for ex in (0.36, 0.64):
-        d.rounded_rectangle((s * (ex - 0.07), s * 0.38, s * (ex + 0.07), s * 0.62), radius=s * 0.07,
-                            fill=light + (255,))
-    d.arc((s * 0.4, s * 0.58, s * 0.6, s * 0.74), 20, 160, fill=light + (255,), width=s // 22)
-    for cx in (0.27, 0.73):
-        d.ellipse((s * (cx - 0.06), s * 0.64, s * (cx + 0.06), s * 0.7), fill=(255, 126, 182, 150))
+    d = ImageDraw.Draw(img, "RGBA")
+    light = tuple(int(c + (255 - c) * 0.35) for c in color)
+    dark = tuple(int(c * 0.78) for c in color)
+    d.rounded_rectangle((s * 0.04, s * 0.08, s * 0.96, s * 0.92), radius=s * 0.4, fill=light + (255,),
+                        outline=dark + (255,), width=s // 22)
+    d.ellipse((s * 0.2, s * 0.14, s * 0.56, s * 0.3), fill=(255, 255, 255, 110))  # gloss
+    for ex in (0.33, 0.67):  # round black eyes with a sparkle
+        d.ellipse((s * (ex - 0.12), s * 0.38, s * (ex + 0.12), s * 0.62), fill=(22, 24, 38, 255))
+        d.ellipse((s * (ex - 0.08), s * 0.41, s * (ex - 0.0), s * 0.49), fill=(255, 255, 255, 255))
+    for cx in (0.2, 0.8):
+        d.ellipse((s * (cx - 0.08), s * 0.6, s * (cx + 0.08), s * 0.7), fill=(255, 126, 182, 170))
+    q = s * 0.06
+    d.arc((s * 0.5 - 2 * q, s * 0.66 - q, s * 0.5, s * 0.66 + q), 0, 180, fill=(22, 24, 38, 255), width=s // 26)
+    d.arc((s * 0.5, s * 0.66 - q, s * 0.5 + 2 * q, s * 0.66 + q), 0, 180, fill=(22, 24, 38, 255), width=s // 26)
     return img.resize((size, size), Image.LANCZOS)
 
 

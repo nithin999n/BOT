@@ -91,13 +91,14 @@ Look in the **^** area next to the clock (drag the icon onto the taskbar to keep
 
 ## BOT on your PC desktop, controllers, health & safety
 
-- **Desktop BOT:** a little living BOT sits in the bottom-right corner of your PC. **Grab it and throw it!** It flies, spins and bounces, and if you throw it hard it gets dizzy 😵 (the BOT on your phone too). Click it for a giggle. When idle, it goes for little walks.
-  - Its eyes follow your mouse. It yawns when you're idle, sleeps (zzz) after 5 minutes,
-    and gets excited when a task starts. The blue bubble flies out of it.
-  - It sweats 😅 when the CPU is busy, looks worried on low battery, and sparkles ⚡ while charging.
-  - It goes see-through when your mouse comes near, and clicks pass through it.
-  - Pet BOT on your phone and the desktop BOT reacts too 💕.
-  - Hide it from ⋮ → *BOT on PC desktop*, or say "hide the desktop bot".
+- **Desktop BOT:** a squishy blue cube-blob with big round black eyes lives in the bottom-right corner.
+  - Its eyes follow your mouse. It gets **happy and bouncy while you type**, cheers you on, and asks cute
+    questions in speech bubbles ("What are you doing? 👀", "Did you drink water today? 💧").
+  - **Click it** and it feels loved: "Do you love me? 🥺". Click again: "Yay!! I love you too! 💖"
+  - **Grab it and throw it!** It flies, spins and bounces, and gets dizzy after a hard throw (the phone BOT too).
+  - It yawns when you're idle, sleeps after 5 minutes, and says "welcome back" when you return.
+  - It sweats when the CPU is busy, looks worried on low battery, and sparkles while charging.
+  - The blue bubble cursor flies out of it. Hide it from the tray, ⋮ → *BOT on PC desktop*, or say "hide the desktop bot".
 - **Control → Air mouse:** hold the pad and point your phone like a TV remote. Tap to click, and use ◀ ▶ for slides.
 - **Control → Gamepad:** a landscape joystick (WASD or arrows) plus Jump/E/F/Q/R/Shift/Ctrl/Esc/Tab/Enter.
   Every key can be held, and the keys are sent as hardware key presses, so games notice them.
