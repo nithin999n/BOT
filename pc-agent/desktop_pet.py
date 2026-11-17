@@ -31,6 +31,7 @@ from overlay import (AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, 
 log = logging.getLogger("bot")
 SS = 2  # supersampling for smooth edges
 INK = (22, 24, 38)            # the black of the eyes
+BLUE = (58, 141, 255)         # BOT's body colour
 PINK = (255, 126, 182)
 WHITE = (255, 255, 255)
 
@@ -110,7 +111,7 @@ class Pet:
         self.on_event = None      # callback(event) -> "dizzy", "petted" (tells the phone)
         self._q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
-        self._color = (79, 195, 255)
+        self._color = BLUE        # the desktop BOT is always a cute blue
         self._center = (0.0, 0.0)
         self._shown = False
         self._alpha = 0.0
@@ -140,8 +141,8 @@ class Pet:
         self.wanted = on
 
     def set_color(self, hex_color: str) -> None:
-        h = hex_color.lstrip("#")
-        self._q.put(("color", tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))))
+        """The app colour changes the phone BOT and the bubble cursor; the desktop BOT stays blue."""
+        return
 
     def bring_here(self) -> None:
         """Drop BOT in from the top of the screen, above your mouse."""
@@ -569,17 +570,12 @@ class Pet:
 
     # -- drawing -----------------------------------------------------------------------
     def _body(self) -> Image.Image:
-        """The squishy blue cube-blob with tiny feet (drawn once per colour)."""
+        """The squishy blue cube-blob (drawn once)."""
         if self._body_cache is None:
             col = self._color
             bw, bh = self.BW * SS, self.BH * SS
-            fh = int(self.S * 0.1 * SS)
-            img = Image.new("RGBA", (bw, bh + fh), (0, 0, 0, 0))
-            d = ImageDraw.Draw(img, "RGBA")
-            foot = _mix(col, (0, 0, 0), 0.25)
-            for fx in (0.3, 0.7):  # tiny feet
-                d.ellipse((bw * fx - bw * 0.11, bh - fh * 0.6, bw * fx + bw * 0.11, bh + fh * 0.9), fill=foot + (255,))
-            top_c, bot_c = _mix(col, WHITE, 0.4), _mix(col, (0, 0, 0), 0.08)
+            img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+            top_c, bot_c = _mix(col, WHITE, 0.22), _mix(col, (0, 0, 0), 0.14)
             grad = Image.new("RGBA", (bw, bh))
             gd = ImageDraw.Draw(grad)
             for y in range(bh):
@@ -660,12 +656,12 @@ class Pet:
             img.alpha_composite(body, (x0, y0))
         d = ImageDraw.Draw(img, "RGBA")
         cx = W / 2
-        lx, ly = p["look"][0] * bw * 0.07, p["look"][1] * bh * 0.06
-        ey = y0 + bh * 0.46 + ly
-        er = bw * 0.12  # big round eyes
+        lx, ly = p["look"][0] * bw * 0.06, p["look"][1] * bh * 0.05
+        ey = y0 + bh * 0.5 + ly
+        er = bw * 0.13  # big round eyes
 
         for side in (-1, 1):
-            ex = cx + side * bw * 0.2 + lx
+            ex = cx + side * bw * 0.19 + lx
             if mood == "dizzy":  # black spiral eyes
                 ex, eyy = cx + side * bw * 0.2, y0 + bh * 0.46
                 spin = t * 7 * side
@@ -680,20 +676,26 @@ class Pet:
             elif p["open"] < 0.12:  # closed: sleeping, blinking, yawning
                 d.arc((ex - er * 0.8, ey - er * 0.5, ex + er * 0.8, ey + er * 0.5), 20, 160, fill=INK + (255,),
                       width=int(3.2 * SS))
-            else:  # big round black eyes with sparkles
-                r = er * (1.2 if mood == "surprised" else 1.0)
-                ry = r * max(0.2, p["open"])
+            else:  # big glossy anime-style eyes: tall oval, blue shine at the bottom, two sparkles
+                r = er * (1.18 if mood == "surprised" else 1.0)
+                ry = r * 1.2 * max(0.2, p["open"])
                 d.ellipse((ex - r, ey - ry, ex + r, ey + ry), fill=INK + (255,))
                 if p["open"] > 0.45:
-                    hr = r * 0.4
-                    d.ellipse((ex - r * 0.55, ey - ry * 0.62, ex - r * 0.55 + hr * 2 * 0.9, ey - ry * 0.62 + hr * 2 * 0.9),
+                    # a soft blue glow low in the eye (gives it depth)
+                    d.ellipse((ex - r * 0.5, ey + ry * 0.38, ex + r * 0.5, ey + ry * 0.86), fill=(70, 110, 230, 95))
+                    # big sparkle (top) + small sparkle (bottom) + a tiny twinkle
+                    hr = r * 0.46
+                    d.ellipse((ex - r * 0.62, ey - ry * 0.72, ex - r * 0.62 + hr * 2, ey - ry * 0.72 + hr * 1.9),
                               fill=WHITE + (255,))
-                    sr = r * 0.17
-                    d.ellipse((ex + r * 0.25, ey + ry * 0.2, ex + r * 0.25 + sr * 2, ey + ry * 0.2 + sr * 2),
-                              fill=WHITE + (235,))
+                    sr = r * 0.2
+                    d.ellipse((ex + r * 0.22, ey + ry * 0.18, ex + r * 0.22 + sr * 2, ey + ry * 0.18 + sr * 2),
+                              fill=WHITE + (240,))
+                    tw = r * 0.09
+                    d.ellipse((ex + r * 0.42, ey - ry * 0.45, ex + r * 0.42 + tw * 2, ey - ry * 0.45 + tw * 2),
+                              fill=WHITE + (220,))
                 if mood == "drowsy" or (mood == "sweaty" and p["open"] < 0.9):  # sleepy eyelid in body colour
                     k = (ey - ry - y0) / bh
-                    lid = _mix(_mix(self._color, WHITE, 0.4), _mix(self._color, (0, 0, 0), 0.08), max(0.0, min(1.0, k)))
+                    lid = _mix(_mix(self._color, WHITE, 0.22), _mix(self._color, (0, 0, 0), 0.14), max(0.0, min(1.0, k)))
                     # cover the top half of the eye with a lid, then draw the lid's edge
                     d.chord((ex - r - 3, ey - ry - 3, ex + r + 3, ey + ry + 3), 180, 360, fill=lid + (255,))
                     d.line([(ex - r, ey), (ex + r, ey)], fill=INK + (255,), width=int(2.6 * SS))

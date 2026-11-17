@@ -97,11 +97,7 @@ class Tray:
             log.warning("Tray icon unavailable: %s", exc)
 
     def _color(self):
-        h = str(self.cfg.get("style", {}).get("color", "#4FC3FF")).lstrip("#")
-        try:
-            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-        except ValueError:
-            return (79, 195, 255)
+        return (58, 141, 255)  # same blue as the desktop BOT
 
     def refresh(self) -> None:
         """Call after anything changed (checkmarks, name, colour)."""
