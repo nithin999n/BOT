@@ -99,6 +99,16 @@ Look in the **^** area next to the clock (drag the icon onto the taskbar to keep
   - It yawns when you're idle, sleeps after 5 minutes, and says "welcome back" when you return.
   - It sweats when the CPU is busy, looks worried on low battery, and sparkles while charging.
   - The blue bubble cursor flies out of it. Hide it from the tray, ⋮ → *BOT on PC desktop*, or say "hide the desktop bot".
+  - **Care (⋮ → *Take care of BOT 🍪*):** food, happiness and a level that grow as you look after it.
+    Feed it cookies, play **chase** (catch it with your mouse), start a **25-minute focus** timer, see
+    **today's report**, and pick an **outfit** (bow, sunglasses, party hat and crown unlock at levels 2–5).
+  - It **answers back**: some questions have buttons, and BOT remembers your answers.
+  - It **dances** when music plays, plays **peek-a-boo** from the screen edge, and has day and night moods.
+    It reminds you to drink water and stretch, and shows a **daily report** at 9 PM.
+  - **Drop a file on BOT** and it swallows it and sends it to your phone (saved in *Download/BOT*).
+  - Every now and then it begs for pats with puppy eyes 🥺. Ignore it for 10 seconds and it cries; click it to make up.
+  - **Throw it too many times** and it gets angry, says "I'm going! You're being too hard on me 😤" and
+    leaves. It comes back sulking and asks for a sorry. Tap the *Sorry* button, say "sorry", or use the Care page.
 - **Control → Air mouse:** hold the pad and point your phone like a TV remote. Tap to click, and use ◀ ▶ for slides.
 - **Control → Gamepad:** a landscape joystick (WASD or arrows) plus Jump/E/F/Q/R/Shift/Ctrl/Esc/Tab/Enter.
   Every key can be held, and the keys are sent as hardware key presses, so games notice them.

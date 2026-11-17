@@ -57,6 +57,8 @@ class BotConnection extends ChangeNotifier {
   bool petOn = true; // the little BOT on the PC desktop
   Map<String, dynamic> walkaway = {'enabled': false, 'minutes': 1};
   final health = ValueNotifier<Map<String, dynamic>?>(null); // cpu, ram, battery, charging, feeling
+  final petStats = ValueNotifier<Map<String, dynamic>?>(null); // desktop BOT: level, hunger, happy, outfit
+  final Map<String, ({IOSink sink, String path})> _downloads = {}; // files coming from the PC
   final _fileEvents = StreamController<Map<String, dynamic>>.broadcast();
 
   final cursor = ValueNotifier<CursorPos?>(null);
@@ -266,6 +268,7 @@ class BotConnection extends ChangeNotifier {
         petOn = msg['pet'] != false;
         if (msg['walkaway'] is Map) walkaway = Map<String, dynamic>.from(msg['walkaway'] as Map);
         if (msg['health'] is Map) health.value = Map<String, dynamic>.from(msg['health'] as Map);
+        if (msg['pet_stats'] is Map) petStats.value = Map<String, dynamic>.from(msg['pet_stats'] as Map);
         final away = msg['away_alerts'];
         if (away is List && away.isNotEmpty) {
           final lines = [
@@ -303,6 +306,19 @@ class BotConnection extends ChangeNotifier {
         notifyListeners();
       case 'health':
         health.value = msg;
+      case 'pet_stats':
+        petStats.value = msg;
+      case 'file_down':
+        _startDownload((msg['id'] ?? '').toString(), (msg['name'] ?? 'file').toString());
+      case 'file_down_chunk':
+        final part = _downloads[(msg['id'] ?? '').toString()];
+        if (part != null) part.sink.add(base64Decode((msg['data'] ?? '').toString()));
+      case 'file_down_end':
+        final id = (msg['id'] ?? '').toString();
+        final done = _downloads.remove(id);
+        if (done != null) {
+          done.sink.close().then((_) => _events.add(BotEvent('file_received', done.path)));
+        }
       case 'alert':
         _events.add(BotEvent('alert', text, id: (msg['title'] ?? 'BOT').toString()));
       case 'pet':
@@ -356,6 +372,36 @@ class BotConnection extends ChangeNotifier {
 
   /// Stop the AI task that's running on the PC.
   void stopTask() => send({'type': 'stop'});
+
+  /// A file dropped on the desktop BOT is arriving: save it to Download/BOT (or the app's folder).
+  void _startDownload(String id, String name) {
+    final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    for (final base in const [
+      '/storage/emulated/0/Download/BOT',
+      '/storage/emulated/0/Android/data/com.botremote.bot_app/files/BOT',
+    ]) {
+      try {
+        final dir = Directory(base)..createSync(recursive: true);
+        var file = File('${dir.path}/$safe');
+        var n = 1;
+        while (file.existsSync()) {
+          final dot = safe.lastIndexOf('.');
+          final stem = dot > 0 ? safe.substring(0, dot) : safe;
+          final ext = dot > 0 ? safe.substring(dot) : '';
+          file = File('${dir.path}/$stem ($n)$ext');
+          n++;
+        }
+        _downloads[id] = (sink: file.openWrite(), path: file.path);
+        return;
+      } catch (_) {
+        // not allowed here: try the next folder
+      }
+    }
+    _events.add(BotEvent('log', 'Couldn\'t save $name on this phone', ok: false));
+  }
+
+  void petAction(String action, [Object? value]) =>
+      send({'type': 'pet_action', 'action': action, if (value != null) 'value': value});
 
   static List<Map<String, dynamic>> _routinesFrom(dynamic raw) {
     if (raw is! List) return [];
@@ -494,6 +540,10 @@ class BotConnection extends ChangeNotifier {
     cursor.dispose();
     screenInfo.dispose();
     health.dispose();
+    petStats.dispose();
+    for (final d in _downloads.values) {
+      d.sink.close();
+    }
     super.dispose();
   }
 }

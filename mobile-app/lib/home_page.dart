@@ -7,6 +7,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'air_mouse_page.dart';
+import 'care_page.dart';
 import 'connection.dart';
 import 'dashboard_page.dart';
 import 'face.dart';
@@ -438,6 +439,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addLog(e.message, ok: e.ok);
       case 'alert':
         _showAlert(e.id, e.message);
+      case 'file_received':
+        final name = e.message.split('/').last;
+        final where = e.message.contains('/Download/') ? 'Download/BOT' : 'the BOT app folder';
+        HapticFeedback.mediumImpact();
+        _flashMood(Mood.excited, const Duration(seconds: 2));
+        _addLog('📥 Got $name from the PC (saved in $where)');
+        _say('Delivery! 📦 $name is in $where');
       case 'pet_event':
         if (e.message == 'dizzy') {
           HapticFeedback.heavyImpact();
@@ -802,6 +810,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   _walkawaySettings();
                 case 'health':
                   _open(DashboardPage(conn: conn));
+                case 'care':
+                  _open(CarePage(conn: conn));
                 case 'transfer':
                   showTransfer(context, conn);
                 case 'style':
@@ -814,6 +824,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'routines', child: Text('Routines')),
+              const PopupMenuItem(value: 'care', child: Text('Take care of BOT 🍪')),
               const PopupMenuItem(value: 'health', child: Text('PC health')),
               CheckedPopupMenuItem(
                 value: 'pet',
