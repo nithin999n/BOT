@@ -102,6 +102,11 @@ Look in the **^** area next to the clock (drag the icon onto the taskbar to keep
   - **Care (⋮ → *Take care of BOT 🍪*):** food, happiness and a level that grow as you look after it.
     Feed it cookies, play **chase** (catch it with your mouse), start a **25-minute focus** timer, see
     **today's report**, and pick an **outfit** (bow, sunglasses, party hat and crown unlock at levels 2–5).
+  - **Hungry BOT:** when its tummy gets low, it says "I'm hungry…" and a 🍪 **cookie pops up somewhere on the screen**.
+    BOT can't stop looking at it. Drag the cookie onto BOT (puppy eyes: "Gimme gimme! 🤤") or just click it,
+    and BOT munches it happily. A minute or two later, with a full tummy, it yawns and asks
+    **"Can I sleep?"**: *Yes, sleep 😴* = a 4-minute nap (click it to wake it up early),
+    *No, stay with me 🥺* = it stays awake with you for 15 minutes. No answer = it dozes off.
   - It **answers back**: some questions have buttons, and BOT remembers your answers.
   - It **dances** when music plays, plays **peek-a-boo** from the screen edge, and has day and night moods.
     It reminds you to drink water and stretch, and shows a **daily report** at 9 PM.

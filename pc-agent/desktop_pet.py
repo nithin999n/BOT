@@ -6,7 +6,9 @@ Personality
 * Asks cute questions (some with answer buttons it remembers), begs for pats with puppy eyes
   and cries if you ignore it for 10 seconds 😭, peeks out from the screen edge (peek-a-boo).
 * Click = "Do you love me? 🥺". Grab and throw it (it gets dizzy). Play chase: catch it!
-* Care: hunger / happiness / level (feed it cookies 🍪). Levels unlock outfits 🎀😎🎉👑.
+* Care: hunger / happiness / level. When hungry a cookie 🍪 pops up somewhere on the screen:
+  drag it to BOT (or click it). With a full tummy it gets sleepy and asks "Can I sleep?" 😴
+  Levels unlock outfits 🎀😎🎉👑.
 * Focus buddy 🍅, water & stretch reminders, good morning / good night, daily report.
 * Drop a file on it: it swallows it and sends it to your phone 📲.
 * Sweats when the CPU is busy, worried on low battery, sparkles while charging.
@@ -29,6 +31,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import health
 import pet_outfits
 import win_input
+from pet_cookie import Cookie
 from overlay import (AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BUBBLE, PM_REMOVE,
                      SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
                      WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, _premultiplied_bgra, gdi32, kernel32, user32)
@@ -56,7 +59,20 @@ LOW_BATTERY = ["Battery is low… plug me in? 🥺"]
 WATER = ["Time to drink some water! 💧", "Water break? 💧 Stay hydrated!"]
 STRETCH = ["Stretch break! 🙆 Arms up!", "Roll your shoulders! 🙆 You've been working hard"]
 NIGHT = ["It's late… go to sleep? 🌙", "Sleepy time soon? 🌙 You need rest!"]
-HUNGRY = ["I'm hungry… 🥺 cookie please? 🍪", "My tummy is rumbling 🥺🍪"]
+HUNGRY_AT = 30                # below this BOT is hungry and a cookie appears on the screen
+HUNGRY = ["I'm hungry… 🥺 I see a cookie over there! Can you bring it to me? 🍪👉",
+          "My tummy is rumbling 🥺 There's a cookie on the screen… bring it pleeease? 🍪"]
+HUNGRY_REMIND = ["The cookie is right there! 🥺🍪 Drag it to me?", "Cookie… 👀🍪 pleeease? 🥺"]
+GIMME = ["Gimme gimme! 🤤🍪", "Is that for me?! 🤤", "Cookie! Cookie! 🤩🍪"]
+GOT_COOKIE = ["Nom nom nom! 😋🍪", "My cookie!! 🤩 Nom nom!"]
+ASK_SLEEP = ["Mmm… my tummy is full and I'm sooo sleepy 😪 Can I sleep?",
+             "*yawn* 😪 Full tummy… sleepy eyes… can I take a nap?"]
+SLEEP_OPTS = (("Yes, sleep 😴", "sleep:yes"), ("No, stay with me 🥺", "sleep:no"))
+GOOD_NIGHT = ["Yay… good night 💤 Wake me if you need me!", "Thank you… nap time 😴💙"]
+STAY = ["Okay! I'll stay awake with you 🥰💪", "Okay okay! I'm awake! I'll stay with you 💕"]
+NAP_DONE = ["That was a yummy nap! 😊✨", "*stretch* I feel so fresh now! 🌟"]
+WOKE = ["Huh? 🥱 …I'm awake! Hi!", "Mmm? 😪 Oh, it's you! Hehe 💙"]
+NAP_SECONDS = 240
 DANCE = ["I love this song! 🎶", "Dance with me! 💃", "Ooh, music! 🎵"]
 BOO = ["Boo! 😆", "Peek-a-boo! 😆", "You found me! 🙈"]
 LEAVING = ["That's it! I'm leaving! You're being too hard on me 😤", "Hmph! I'm going away! Too rough! 😤💢"]
@@ -166,6 +182,7 @@ class Pet:
         self._shadow_cache = None
         self._bubble_cache: dict = {}
         self.keys = KeyCounter()
+        self.cookie = Cookie()
 
     # -- public ------------------------------------------------------------------
     def load_life(self, data: dict | None, save_fn) -> None:
@@ -453,7 +470,8 @@ class Pet:
               "cookie_t0": -99.0, "eat_until": 0.0, "swallow_until": 0.0, "hover_since": 0.0,
               "next_peek": now + random.uniform(240, 480), "life_tick": now, "keys_seen": 0, "active_min": 0.0,
               "next_reminder_min": 60.0, "reminder_i": 0, "next_night": 0.0, "next_hungry": now + 60,
-              "water_followup": 0.0, "was_focus": False}
+              "water_followup": 0.0, "was_focus": False, "cookie_food": 35, "sleepy_at": 0.0,
+              "sleep_ask_until": 0.0, "nap_until": 0.0, "stay_until": 0.0, "gimme_said": False}
         last_sig = None
         last_pos = None
         last_t = time.perf_counter()
@@ -472,6 +490,9 @@ class Pet:
                 dt, last_t = min(0.05, now - last_t), now
                 self._life_tick(st)
                 self._physics(dt)
+                show_cookie = self._alpha > 20 and not self.leaving
+                if self.cookie.step(dt, self._center, self.S * 0.8, show_cookie) == "eaten":
+                    self._eat(st, 60, skip_fall=True)
                 params = self._update(st)
                 self._maybe_walk(params["mood"])
                 self._maybe_peek(st, params["mood"])
@@ -484,12 +505,22 @@ class Pet:
                 elif pos != last_pos:  # only moved: reuse the picture
                     last_pos = pos
                     self._push(self._last_img, params["alpha"])
-                moving = self.dragging or self.flying or self.walking or self.peek_side
+                moving = self.dragging or self.flying or self.walking or self.peek_side \
+                    or self.cookie.dragging or self.cookie.flying
                 fps = 60 if moving else (24 if params["active"] else (4 if params["mood"] == "asleep" else 10))
             except Exception:
                 log.exception("desktop pet frame failed")
                 fps = 1
             time.sleep(1 / fps)
+
+    def _eat(self, st: dict, food: float, skip_fall: bool = False) -> None:
+        """Start munching a cookie (a falling one, or the one you brought from the screen)."""
+        now = time.perf_counter()
+        st["cookie_food"] = food
+        st["cookie_t0"] = now - (0.7 if skip_fall else 0.0)
+        st["nap_until"] = st["sleep_ask_until"] = 0.0
+        st["beg_until"] = st["cry_until"] = 0.0
+        self._speak(st, random.choice(GOT_COOKIE) if skip_fall else "A cookie! For me?! 🍪🥺", 2.0)
 
     def _speak(self, st: dict, text: str, seconds: float, options=()) -> None:
         st["speech"], st["speech_until"], st["options"] = text, time.perf_counter() + seconds, tuple(options)
@@ -514,6 +545,13 @@ class Pet:
             life.cheer(happy=-15)
         elif kind == "click" and self.sulking:  # no pats until you say sorry
             self._speak(st, random.choice(SULK), 8, SORRY_OPTS)
+        elif kind == "click" and now < st["nap_until"]:  # woke it up from its nap
+            st["nap_until"] = 0.0
+            self._speak(st, random.choice(WOKE), 3)
+            st["react"], st["react_until"] = "happy", now + 2
+        elif kind == "click" and now < st["sleep_ask_until"]:  # still waiting for an answer
+            st["sleep_ask_until"] = now + 15
+            self._speak(st, "So sleepy… can I sleep? 🥺😪", 15, SLEEP_OPTS)
         elif kind == "click":
             life.cheer(happy=5)
             if life.add_xp(2):
@@ -551,11 +589,13 @@ class Pet:
         elif kind == "answer":
             self._answer(st, cmd[1])
         elif kind == "feed":
-            if life.d["hunger"] >= 95:
+            if self.cookie.visible:  # the cookie on the screen flies into BOT's mouth
+                self.cookie.fly_home()
+                self._speak(st, "My cookie! 🤤🍪", 2.0)
+            elif life.d["hunger"] >= 95:
                 self._speak(st, "I'm full! 🥴 Maybe later?", 3)
             else:
-                st["cookie_t0"] = now
-                self._speak(st, "A cookie! For me?! 🍪🥺", 2.0)
+                self._eat(st, 35)
         elif kind == "chase":
             self.chase_until, self.catches = now + cmd[1], 0
             self.peek_side = 0
@@ -605,6 +645,19 @@ class Pet:
         now = time.perf_counter()
         life = self.life
         key, _, val = value.partition(":")
+        if key == "sleep":
+            st["sleep_ask_until"] = 0.0
+            if val == "yes":
+                st["nap_until"] = now + NAP_SECONDS
+                self._speak(st, random.choice(GOOD_NIGHT), 3)
+                life.cheer(happy=3)
+            else:
+                st["stay_until"] = now + 15 * 60
+                self._speak(st, random.choice(STAY), 4)
+                st["react"], st["react_until"] = "love", now + 3
+                self._burst(st, "heart", 6)
+                life.cheer(happy=5)
+            return
         if key == "sorry":
             if self.sulking or self.away_until or self.leaving:
                 self.sulking, self.leaving = False, 0
@@ -751,6 +804,7 @@ class Pet:
             raise ctypes.WinError(ctypes.get_last_error())
         shell32.DragAcceptFiles(self._hwnd, True)
         BUBBLE.origin = self.center  # the bubble cursor flies out of the desktop BOT
+        self.cookie.setup(self.S, self.bounds)
 
     # -- behaviour -------------------------------------------------------------------
     def _update(self, st: dict) -> dict:
@@ -833,12 +887,40 @@ class Pet:
         eating = 0.7 < cookie_age < 2.4
         if 2.4 < cookie_age < 2.6:
             st["cookie_t0"] = -99.0
-            life.cheer(happy=5, hunger=35)
+            life.cheer(happy=8, hunger=st["cookie_food"])
             if life.add_xp(5):
                 self._level_up(st)
             self._speak(st, "Yum! 😋 Thank you! 💕", 3)
             st["react"], st["react_until"] = "love", now + 2
+            self._burst(st, "heart", 5)
+            if not st["sleepy_at"] and life.d["hunger"] > 60:  # full tummy -> sleepy in a little while
+                st["sleepy_at"] = now + random.uniform(60, 120)
         swallowing = now < st["swallow_until"]
+
+        # full tummy -> "Can I sleep?" -> nap (or stay awake with you)
+        napping = now < st["nap_until"]
+        if napping and (self.dragging or self.flying or self.leaving):  # picked up: wide awake now
+            st["nap_until"], napping = 0.0, False
+        elif st["nap_until"] and not napping:  # the nap is over
+            st["nap_until"] = 0.0
+            self._speak(st, random.choice(NAP_DONE), 4)
+            st["react"], st["react_until"] = "happy", now + 2
+            life.cheer(happy=10)
+        asking_sleep = now < st["sleep_ask_until"]
+        if st["sleep_ask_until"] and not asking_sleep:  # no answer: it just dozes off
+            st["sleep_ask_until"] = 0.0
+            st["nap_until"], napping = now + NAP_SECONDS, True
+            self._speak(st, "…zzz 😴", 2)
+        staying = now < st["stay_until"]
+
+        # dragging the cookie close: puppy eyes
+        ccx, ccy = self.cookie.center
+        cookie_near = self.cookie.dragging and math.hypot(ccx - self._center[0], ccy - self._center[1]) < self.S * 2.6
+        if cookie_near and not st["gimme_said"]:
+            st["gimme_said"] = True
+            self._speak(st, random.choice(GIMME), 2.5)
+        elif not self.cookie.dragging:
+            st["gimme_said"] = False
 
         # pat begging -> crying
         begging = now < st["beg_until"]
@@ -864,8 +946,12 @@ class Pet:
             mood = "eat"
         elif crying:
             mood = "cry"
-        elif begging:
+        elif begging or cookie_near:
             mood = "puppy"
+        elif napping:
+            mood = "asleep"
+        elif asking_sleep:
+            mood = "drowsy"
         elif st["react"] and now < st["react_until"]:
             mood = st["react"]
         elif self.sulking:
@@ -882,13 +968,13 @@ class Pet:
             mood = "sweaty"
         elif feeling == "low_battery":
             mood = "worried"
-        elif life.d["hunger"] < 20:
+        elif life.d["hunger"] < HUNGRY_AT:
             mood = "hungry"
         elif typing:
             mood = "typing"
-        elif st["idle"] > 300:
+        elif st["idle"] > 300 and not staying:
             mood = "asleep"
-        elif st["idle"] > 60:
+        elif st["idle"] > 60 and not staying:
             mood = "drowsy"
         else:
             mood = "idle"
@@ -904,7 +990,12 @@ class Pet:
         quiet = self.sulking or self.leaving or bool(self.away_until) or focusing or chasing or self.flying or self.dragging or self.peek_side or mood in ("asleep", "dizzy", "cry", "eat")
         if not talking and not quiet and st["idle"] < 60:
             today = date.today().isoformat()
-            if life.d.get("morning") != today and 5 <= hour < 12:
+            if st["sleepy_at"] and now > st["sleepy_at"] and not busy:
+                st["sleepy_at"] = 0.0
+                st["sleep_ask_until"] = now + 15
+                st["next_yawn"] = t  # big yawn first
+                self._speak(st, random.choice(ASK_SLEEP), 15, SLEEP_OPTS)
+            elif life.d.get("morning") != today and 5 <= hour < 12:
                 life.d["morning"] = today
                 life._dirty = True
                 self._speak(st, "Good morning! ☀️ Let's have a great day!", 5)
@@ -925,9 +1016,13 @@ class Pet:
             elif (hour >= 23 or hour < 5) and now > st["next_night"]:
                 st["next_night"] = now + 30 * 60
                 self._speak(st, random.choice(NIGHT), 5)
-            elif life.d["hunger"] < 20 and now > st["next_hungry"]:
-                st["next_hungry"] = now + 10 * 60
-                self._speak(st, random.choice(HUNGRY), 5)
+            elif life.d["hunger"] < HUNGRY_AT and now > st["next_hungry"]:
+                st["next_hungry"] = now + 4 * 60
+                if not self.cookie.visible:  # a cookie pops up somewhere on the screen
+                    self.cookie.spawn(self._center)
+                    self._speak(st, random.choice(HUNGRY), 7)
+                else:
+                    self._speak(st, random.choice(HUNGRY_REMIND), 6)
             elif dancing and now > st["next_dance_line"]:
                 st["next_dance_line"] = now + 180
                 self._speak(st, random.choice(DANCE), 3)
@@ -956,7 +1051,12 @@ class Pet:
         blink = math.sin(bp * math.pi) if 0 <= bp <= 1 else 0.0
 
         # where to look: the bubble cursor while working, otherwise your mouse
-        mx, my = (bx, by) if bubble_on else win_input.cursor_pos()
+        if bubble_on:
+            mx, my = bx, by
+        elif self.cookie.visible:  # can't stop looking at the cookie 👀🍪
+            mx, my = self.cookie.center
+        else:
+            mx, my = win_input.cursor_pos()
         cx, cy = self._center
         dx, dy = mx - cx, my - cy
         dist = max(1.0, math.hypot(dx, dy))

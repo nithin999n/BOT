@@ -113,7 +113,7 @@ class Life:
 
     def tick(self, minutes: float) -> None:
         """Hunger and happiness slowly go down while the PC is on."""
-        self.d["hunger"] = max(0.0, self.d["hunger"] - minutes / 12)
+        self.d["hunger"] = max(0.0, self.d["hunger"] - minutes / 4)  # ~15% an hour
         if time.time() - self.last_interaction > 600:
             self.d["happy"] = max(0.0, self.d["happy"] - minutes / 15)
         self._dirty = True
