@@ -38,7 +38,13 @@ from overlay import (AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, 
 from pet_life import (BEG, BEG_YES, CRY, FORGIVE, REPLIES, KeyCounter, Life, MusicMeter, pick_question)
 
 log = logging.getLogger("bot")
-SS = 2                        # supersampling for smooth edges
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
+user32.GetForegroundWindow.restype = wt.HWND
+user32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+user32.IsWindowVisible.argtypes = [wt.HWND]
+HWND_TOPMOST = wt.HWND(-1)
+SS = 2                       # supersampling for smooth edges
 INK = (22, 24, 38)            # the black of the eyes
 BLUE = (58, 141, 255)         # BOT's body colour
 PINK = (255, 126, 182)
@@ -488,6 +494,9 @@ class Pet:
             try:
                 now = time.perf_counter()
                 dt, last_t = min(0.05, now - last_t), now
+                if now - st.get("top_check", 0.0) > 2:
+                    st["top_check"] = now
+                    self._keep_on_top()
                 self._life_tick(st)
                 self._physics(dt)
                 show_cookie = self._alpha > 20 and not self.leaving
@@ -512,6 +521,24 @@ class Pet:
                 log.exception("desktop pet frame failed")
                 fps = 1
             time.sleep(1 / fps)
+
+    def _keep_on_top(self) -> None:
+        """Windows sometimes drops "always on top" (e.g. after locking the PC): claim it back.
+        Stays politely behind true fullscreen apps (videos, games, slideshows)."""
+        fg = user32.GetForegroundWindow()
+        if fg and fg not in (self._hwnd, self.cookie._hwnd):
+            r, mon = wt.RECT(), wt.RECT()
+            user32.GetWindowRect(fg, ctypes.byref(r))
+            mon.right, mon.bottom = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+            cls = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(fg, cls, 64)
+            fullscreen = (r.left, r.top, r.right, r.bottom) == (0, 0, mon.right, mon.bottom) \
+                and cls.value not in ("Progman", "WorkerW")  # (the desktop itself isn't "fullscreen")
+            if fullscreen:
+                return
+        for hwnd in (self._hwnd, self.cookie._hwnd):
+            if hwnd and user32.IsWindowVisible(hwnd):
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # NOSIZE|NOMOVE|NOACTIVATE
 
     def _eat(self, st: dict, food: float, skip_fall: bool = False) -> None:
         """Start munching a cookie (a falling one, or the one you brought from the screen)."""
