@@ -114,6 +114,28 @@ Look in the **^** area next to the clock (drag the icon onto the taskbar to keep
   - Every now and then it begs for pats with puppy eyes 🥺. Ignore it for 10 seconds and it cries; click it to make up.
   - **Throw it too many times** and it gets angry, says "I'm going! You're being too hard on me 😤" and
     leaves. It comes back sulking and asks for a sorry. Tap the *Sorry* button, say "sorry", or use the Care page.
+- **BOT's world (v1.0)** — ⋮ → *BOT's world 🌍* in the app, the tray menu, or your voice:
+  - 💖 **Do you love me?** Click BOT and it asks again and again (5–10 times). *Hmm 🤔* makes it teary and it asks even more.
+    Love meter on the phone. Say "I love you" and BOT says it back.
+  - 🤗 **Hug:** press and hold BOT for a second. Or send a hug from the app.
+  - 🎮 **Games:** fetch ⚽ (throw the ball), hide-and-seek 🙈 (BOT hides behind a window or peeks from an edge),
+    cookie catch 🍪, bubbles 🫧, rock-paper-scissors ✊, tic-tac-toe ❌⭕, chase 🏃, photo with BOT 📸 (webcam → phone).
+  - 🪟 Sits on top of the window you're using and tumbles down if you move it. Reacts to apps: popcorn for YouTube/Netflix,
+    nerd glasses for coding, cheers for games, curious peeks at WhatsApp.
+  - ☔ Weather looks (free Open-Meteo): umbrella when rain is coming, scarf when cold. 🪔 Festivals (Diwali, Holi, Ugadi,
+    Sankranti, Ganesh Chaturthi, Christmas, New Year) and 🎂 your birthday ("my birthday is 12 March").
+  - 👏 Clap twice → BOT comes running (PC microphone, only loudness, nothing recorded; switch off in the tray).
+  - 🎵 Music buddy: shows the song with ⏮ ⏯ ⏭ on the PC and the phone.
+  - ⏰ Reminders by voice: "remind me at 5 to call mom", "remind me in 10 minutes to stretch" — BOT walks to the middle of
+    the screen with a note and your phone gets an alert.
+  - 😊 Mood journal once a day (week view on the phone), 📖 BOT's diary, 🏅 22 badges (some unlock 🌸 🎓 😇 outfits),
+    🫙 happy-moments jar, 💙 sweet words, late-night company after 1 AM, comfort mode on sad days.
+  - 👀 20-20-20 eye breaks, a "take a break" plea after 2 hours non-stop, ⌨️ typing speed with a 🔥 aura.
+  - 🧹 Desktop tidy-up into *Desktop › BOT Tidy* (nothing deleted, undo in the tray). 😆 Cursor prank (off by default).
+  - 🌙 Good-night routine: BOT tucks in and asks to put the PC to sleep. 👶 Baby BOT hatches at level 6.
+  - 📱 BOT follows you to your phone after 10 idle minutes and comes back when you do. 📢 Find my phone (tray).
+    ✂️ Snip to phone: **Ctrl+Alt+P**. 📸 Photo when someone unlocks the PC while you're away (switch in the app).
+    📞 Calls & messages on the PC (app → BOT's world → Settings, needs Notification access).
 - **Control → Air mouse:** hold the pad and point your phone like a TV remote. Tap to click, and use ◀ ▶ for slides.
 - **Control → Gamepad:** a landscape joystick (WASD or arrows) plus Jump/E/F/Q/R/Shift/Ctrl/Esc/Tab/Enter.
   Every key can be held, and the keys are sent as hardware key presses, so games notice them.
