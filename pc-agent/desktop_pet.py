@@ -30,8 +30,10 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import health
 import pet_outfits
+import pet_props
 import win_input
 from pet_cookie import Cookie
+from pet_fun import Fun
 from overlay import (AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BUBBLE, PM_REMOVE,
                      SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
                      WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, _premultiplied_bgra, gdi32, kernel32, user32)
@@ -189,6 +191,10 @@ class Pet:
         self._bubble_cache: dict = {}
         self.keys = KeyCounter()
         self.cookie = Cookie()
+        self.fun: Fun | None = None   # games, love, hugs, reminders... (made on BOT's thread)
+        self.out_fn = None            # callback(dict) -> sent to the phone
+        self._walk_speed = 110.0
+        self._fx: dict = {}
 
     # -- public ------------------------------------------------------------------
     def load_life(self, data: dict | None, save_fn) -> None:
@@ -250,9 +256,24 @@ class Pet:
         if ok:
             self._q.put(("react", "happy", 2.0))
 
+    def fun_cmd(self, name: str, *args) -> None:
+        """Run a Fun method on BOT's thread (games, reminders, moments, options...)."""
+        self.wanted = self.wanted or name in ("game_start",)
+        self._q.put(("fun", name) + tuple(args))
+
+    def world(self) -> dict:
+        w = self.life.world()
+        if self.fun:
+            w["weather"] = self.fun.weather.now
+            w["playing"] = self.fun.media.now
+            w["baby"] = bool(self.life.d.get("baby"))
+        return w
+
     def stats(self) -> dict:
         s = self.life.public()
         s["focus_left"] = max(0, int(self.focus_until - time.time())) if self.focus_until else 0
+        s["love"] = int(self.life.d["counts"].get("love_yes", 0))
+        s["away"] = bool(self.fun and self.fun.gone)
         return s
 
     def center(self):
@@ -323,6 +344,10 @@ class Pet:
         self.dragging = False
         user32.ReleaseCapture()
         now = time.perf_counter()
+        if self.fun and self.fun.hugging:  # a long hold was a hug
+            self._q.put(("fun", "end_hug"))
+            self.flying, self.vx, self.vy = True, 0.0, 0.0
+            return
         if self._moved < 6 and now - self._grab_t < 0.35:  # a click, not a throw
             cx, cy = win_input.cursor_pos()
             px, py = cx - self.x, cy - self.y
@@ -357,6 +382,9 @@ class Pet:
     def _limits(self):
         """Window positions where BOT's body touches the screen edges / taskbar."""
         side = (self.W - self.BW) / 2
+        perch = self.fun.perch_limits() if self.fun else None
+        if perch:
+            return (perch[0], perch[1], self.bounds[1] - self.H * 0.35, perch[2])
         return (self.bounds[0] - side, self.bounds[2] - self.W + side, self.bounds[1] - self.H * 0.35,
                 self.bounds[3] - self.H + self.FOOT_GAP)
 
@@ -372,6 +400,8 @@ class Pet:
             self._samples = [s for s in self._samples if now - s[0] < 0.15]
             self.angle *= 0.8
         elif self.away_until:  # gone off-screen, sulking somewhere
+            pass
+        elif self.fun and self.fun.drive(dt):  # hiding / begging for a break: stay put
             pass
         elif self.leaving and not self.flying:  # stomping off the screen
             self.x += self.leaving * 420 * dt
@@ -410,11 +440,12 @@ class Pet:
                         self._q.put(("say", random.choice(DIZZY), 3.0))
                         self._emit("dizzy")
         elif self.walking:
-            self.x += self._walk_dir * 110 * dt
+            self.x += self._walk_dir * self._walk_speed * dt
             hop = abs(math.sin((now - self._walk_t0) * 9)) * self.H * 0.04
             self.y = floor - hop
             if (self._walk_dir > 0 and self.x >= self._walk_to) or (self._walk_dir < 0 and self.x <= self._walk_to):
                 self.walking, self.y = False, floor
+                self._walk_speed = 110.0 if not (self.fun and self.fun.game) else self._walk_speed
         else:
             self.y = min(self.y, floor)
             if self.y < floor - 1:  # somehow in the air: fall down
@@ -446,6 +477,9 @@ class Pet:
         now = time.perf_counter()
         if mood != "idle" or self.flying or self.dragging or self.walking or self.peek_side or now < self._next_walk:
             return
+        if self.fun and (self.fun.busy_now() or self.fun.pinned):
+            return
+        self._walk_speed = 110.0
         self._next_walk = now + random.uniform(25, 50)
         left, right, _top, _floor = self._limits()
         target = random.uniform(left + 20, right - 20)
@@ -464,6 +498,12 @@ class Pet:
             log.warning("Desktop BOT disabled: %s", exc)
             return
         self.music = MusicMeter()
+        try:
+            self.fun = Fun(self)
+            self.fun.start()
+        except Exception:
+            log.exception("BOT's fun features failed to start")
+            self.fun = None
         msg = wt.MSG()
         now = time.perf_counter()
         st = {"t0": now, "blink": 0.0, "next_blink": 2.0, "look": (0.0, 0.0), "react": None, "react_until": 0.0,
@@ -515,7 +555,7 @@ class Pet:
                     last_pos = pos
                     self._push(self._last_img, params["alpha"])
                 moving = self.dragging or self.flying or self.walking or self.peek_side \
-                    or self.cookie.dragging or self.cookie.flying
+                    or self.cookie.dragging or self.cookie.flying or bool(self.fun and self.fun.game)
                 fps = 60 if moving else (24 if params["active"] else (4 if params["mood"] == "asleep" else 10))
             except Exception:
                 log.exception("desktop pet frame failed")
@@ -525,6 +565,8 @@ class Pet:
     def _keep_on_top(self) -> None:
         """Windows sometimes drops "always on top" (e.g. after locking the PC): claim it back.
         Stays politely behind true fullscreen apps (videos, games, slideshows)."""
+        if self.fun and self.fun.hiding:
+            return
         fg = user32.GetForegroundWindow()
         if fg and fg not in (self._hwnd, self.cookie._hwnd):
             r, mon = wt.RECT(), wt.RECT()
@@ -562,6 +604,12 @@ class Pet:
                 self._burst(st, "heart", 5)
         elif kind == "say":
             self._speak(st, cmd[1], cmd[2])
+        elif kind == "fun":
+            if self.fun:
+                try:
+                    getattr(self.fun, cmd[1])(st, *cmd[2:])
+                except Exception:
+                    log.exception("BOT fun command %s failed", cmd[1])
         elif kind == "angry":  # thrown too many times: storm off
             self._dizzy_until = 0.0
             st["beg_until"] = st["cry_until"] = 0.0
@@ -579,6 +627,8 @@ class Pet:
         elif kind == "click" and now < st["sleep_ask_until"]:  # still waiting for an answer
             st["sleep_ask_until"] = now + 15
             self._speak(st, "So sleepy… can I sleep? 🥺😪", 15, SLEEP_OPTS)
+        elif kind == "click" and self.fun and self.fun.click(st):  # games, love chain, break plea...
+            self._emit("petted")
         elif kind == "click":
             life.cheer(happy=5)
             if life.add_xp(2):
@@ -602,16 +652,13 @@ class Pet:
                     self._level_up(st)
             elif self.peek_side:
                 self._boo(st)
-            else:  # you clicked BOT: it feels loved
+            else:  # you clicked BOT: it feels loved and asks "do you love me?" again and again
                 self._burst(st, "heart", 6)
                 st["react"], st["react_until"] = "love", now + 3.0
-                if now - st["love_asked"] < 8:
-                    self._speak(st, random.choice(LOVE_YES), 3.5)
-                    st["love_asked"] = -99.0
-                    self._burst(st, "heart", 6)
+                if self.fun:
+                    self.fun.start_love(st)
                 else:
                     self._speak(st, random.choice(LOVE_ASK), 7.0, (("Yes! 💖", "love:yes"), ("Sooo much! 💕", "love:alot")))
-                    st["love_asked"] = now
             self._emit("petted")
         elif kind == "answer":
             self._answer(st, cmd[1])
@@ -672,6 +719,8 @@ class Pet:
         now = time.perf_counter()
         life = self.life
         key, _, val = value.partition(":")
+        if self.fun and self.fun.answer(st, key, val):
+            return
         if key == "sleep":
             st["sleep_ask_until"] = 0.0
             if val == "yes":
@@ -924,6 +973,17 @@ class Pet:
                 st["sleepy_at"] = now + random.uniform(60, 120)
         swallowing = now < st["swallow_until"]
 
+        # games, love, hugs, reminders, festivals, weather...
+        fx = {}
+        if self.fun:
+            try:
+                fx = self.fun.frame(st, now, t, {"typing": typing, "focusing": bool(focusing), "hour": hour,
+                                                 "mood_guess": st.get("last_mood", "idle")})
+            except Exception:
+                log.exception("BOT fun frame failed")
+                fx = {}
+        self._fx = fx
+
         # full tummy -> "Can I sleep?" -> nap (or stay awake with you)
         napping = now < st["nap_until"]
         if napping and (self.dragging or self.flying or self.leaving):  # picked up: wide awake now
@@ -959,7 +1019,9 @@ class Pet:
             self._speak(st, random.choice(CRY), 9)
             life.cheer(happy=-3)
 
-        if self.leaving:
+        if fx.get("force"):
+            mood = fx["force"]
+        elif self.leaving:
             mood = "angry"
         elif self.dragging:
             mood = "surprised" if not self.sulking else "sulk"
@@ -975,6 +1037,8 @@ class Pet:
             mood = "cry"
         elif begging or cookie_near:
             mood = "puppy"
+        elif fx.get("mood"):
+            mood = fx["mood"]
         elif napping:
             mood = "asleep"
         elif asking_sleep:
@@ -1014,10 +1078,13 @@ class Pet:
             st["next_sorry_ask"] = now + 40
             self._speak(st, random.choice(ASK_SORRY), 25, SORRY_OPTS)
             talking = True
-        quiet = self.sulking or self.leaving or bool(self.away_until) or focusing or chasing or self.flying or self.dragging or self.peek_side or mood in ("asleep", "dizzy", "cry", "eat")
+        st["last_mood"] = mood
+        quiet = bool(fx.get("quiet")) or self.sulking or self.leaving or bool(self.away_until) or focusing or chasing or self.flying or self.dragging or self.peek_side or mood in ("asleep", "dizzy", "cry", "eat")
         if not talking and not quiet and st["idle"] < 60:
             today = date.today().isoformat()
-            if st["sleepy_at"] and now > st["sleepy_at"] and not busy:
+            if self.fun and self.fun.chatter(st, now, hour, mood):
+                pass
+            elif st["sleepy_at"] and now > st["sleepy_at"] and not busy:
                 st["sleepy_at"] = 0.0
                 st["sleep_ask_until"] = now + 15
                 st["next_yawn"] = t  # big yawn first
@@ -1025,7 +1092,8 @@ class Pet:
             elif life.d.get("morning") != today and 5 <= hour < 12:
                 life.d["morning"] = today
                 life._dirty = True
-                self._speak(st, "Good morning! ☀️ Let's have a great day!", 5)
+                wline = self.fun.weather.line() if self.fun else ""
+                self._speak(st, "Good morning! ☀️ Let's have a great day!" + (f" {wline}" if wline else ""), 7)
                 st["react"], st["react_until"] = "excited", now + 2
             elif hour >= 21 and life.d.get("report_day") != today:
                 life.d["report_day"] = today
@@ -1080,6 +1148,8 @@ class Pet:
         # where to look: the bubble cursor while working, otherwise your mouse
         if bubble_on:
             mx, my = bx, by
+        elif fx.get("look"):
+            mx, my = fx["look"]
         elif self.cookie.visible:  # can't stop looking at the cookie 👀🍪
             mx, my = self.cookie.center
         else:
@@ -1109,6 +1179,8 @@ class Pet:
         stats_text = ""
         if over and now - st["hover_since"] > 0.8 and not st["speech"]:
             stats_text = f"Lv {life.level} · 🍪 {round(life.d['hunger'])}% · 💖 {round(life.d['happy'])}%"
+            if self.fun and self.fun.wpm >= 15:
+                stats_text += f" · ⌨️ {self.fun.wpm} WPM"
         focus_text = ""
         if focusing and not st["speech"] and not stats_text:
             left_s = int(self.focus_until - time.time())
@@ -1135,7 +1207,8 @@ class Pet:
             p[5] -= 1 / 12
         st["particles"] = [p for p in st["particles"] if p[5] > 0]
 
-        target_alpha = 255 if self.wanted and not self.away_until else 0
+        target_alpha = 255 if self.wanted and not self.away_until and not (
+            self.fun and (self.fun.gone is True or (self.fun.game and self.fun.game.get("phase") == "vanish"))) else 0
         self._alpha += (target_alpha - self._alpha) * 0.35
         if abs(target_alpha - self._alpha) < 3:
             self._alpha = float(target_alpha)
@@ -1156,15 +1229,19 @@ class Pet:
         if mood == "puppy":
             tilt = math.sin(t * 25) * 1.2  # trembling a little
         breathe = math.sin(t * 2.2) * 0.012 if mood in ("idle", "drowsy", "asleep", "hungry") else 0.0
+        if fx.get("breathe") is not None:
+            breathe = fx["breathe"]
 
-        outfit = self._outfit(mood, feeling, focusing, hour)
+        outfit = self._outfit(mood, feeling, focusing, hour, fx.get("outfit"))
+        props = tuple(fx.get("props", ()))
+        under = tuple(fx.get("under", ()))
         show_speech = st["speech"] if not (self.flying and not self.dragging) else ""
         options = st["options"] if show_speech else ()
         cookie_y = None
         if 0 <= cookie_age < 0.7:
             cookie_y = cookie_age / 0.7
         active = bool(st["particles"]) or blink > 0 or bounce > 0 or tilt != 0 or cookie_y is not None \
-            or mood in ("dizzy", "surprised", "sweaty", "cry", "eat", "puppy", "angry") \
+            or mood in ("dizzy", "surprised", "sweaty", "cry", "eat", "puppy", "angry", "hug") or bool(props) \
             or abs(target_alpha - self._alpha) > 0 or yawning or bool(focus_text)
         chomp = int(t * 7) % 2 if mood == "eat" else 0
         sig = (mood, round(openness, 1), round(st["look"][0] * 6), round(st["look"][1] * 6), yawning,
@@ -1172,16 +1249,21 @@ class Pet:
                stats_text, focus_text, outfit, chomp, None if cookie_y is None else round(cookie_y * 20),
                tuple((p[0], round(p[1] * 40), round(p[2] * 40)) for p in st["particles"]),
                (int(t * 2) if mood == "sweaty" else 0), (int(t * 12) if mood in ("dizzy", "cry") else 0),
-               round(self.angle), round(self.squish * 10))
+               round(self.angle), round(self.squish * 10), props, under,
+               int(min(0.0, self.bounds[2] - (self.x + self.W)) // 12), int(max(0.0, self.bounds[0] - self.x) // 12),
+               int(t * 8) if props or under else 0)
         return {"mood": mood, "open": openness, "look": st["look"], "yawn": yawning, "bounce": bounce,
                 "breathe": breathe, "tilt": tilt, "alpha": self._alpha, "sig": sig, "active": active, "t": t,
                 "particles": list(st["particles"]), "speech": show_speech, "options": options,
-                "stats": stats_text, "focus": focus_text, "outfit": outfit, "chomp": chomp, "cookie": cookie_y}
+                "stats": stats_text, "focus": focus_text, "outfit": outfit, "chomp": chomp, "cookie": cookie_y,
+                "props": props, "under": under}
 
-    def _outfit(self, mood: str, feeling: str, focusing: bool, hour: int) -> str:
+    def _outfit(self, mood: str, feeling: str, focusing: bool, hour: int, special: str | None = None) -> str:
         choice = self.life.d.get("outfit", "auto")
         if choice != "auto":
             return choice if self.life.unlocked(choice) else "none"
+        if special:  # birthday / festival / sunny weather
+            return special
         if focusing:
             return "headband"
         if mood in ("asleep", "drowsy") and (hour >= 22 or hour < 6):
@@ -1249,6 +1331,11 @@ class Pet:
             ch = int(small.size * 1.7)
             rows, row, row_w = [], [], 0
             for label, value in options:
+                if value == "|":  # forced new row
+                    if row:
+                        rows.append(row)
+                    row, row_w = [], 0
+                    continue
                 cw = int(probe.textlength(label, font=small)) + 2 * chip_pad
                 if row and row_w + gap + cw > max_w:
                     rows.append(row)
@@ -1309,6 +1396,8 @@ class Pet:
         else:
             img.alpha_composite(body, (x0, y0))
         d = ImageDraw.Draw(img, "RGBA")
+        for item in p.get("under", ()):  # paint on BOT (Holi colours)
+            pet_props.under(d, item[0], x0, y0, bw, bh, SS, t)
         cx = W / 2
         lx, ly = p["look"][0] * bw * 0.06, p["look"][1] * bh * 0.05
         if mood == "puppy":
@@ -1330,7 +1419,7 @@ class Pet:
                 w_, h_ = er * 0.8, er * 0.55
                 d.line([(ex + side * w_, ey - h_), (ex - side * w_ * 0.2, ey), (ex + side * w_, ey + h_)],
                        fill=INK + (255,), width=int(3.4 * SS), joint="curve")
-            elif mood in ("typing", "happy", "excited", "dance", "eat"):  # ^ ^ happy eyes
+            elif mood in ("typing", "happy", "excited", "dance", "eat", "hug"):  # ^ ^ happy eyes
                 d.arc((ex - er, ey - er * 0.7, ex + er, ey + er * 1.1), 200, 340, fill=INK + (255,), width=int(4 * SS))
             elif mood == "love":  # heart eyes
                 d.polygon(_heart(ex, ey, er * 1.05), fill=(255, 77, 141, 255))
@@ -1385,14 +1474,14 @@ class Pet:
                     d.ellipse((tx - r, ty - r, tx + r, ty + r), fill=TEAR + (int(230 * (1 - ph)),))
 
         # blush
-        blush = 165 if mood in ("love", "happy", "typing", "excited", "dance", "puppy") else 105
+        blush = 165 if mood in ("love", "happy", "typing", "excited", "dance", "puppy", "hug") else 105
         puff = 1.35 if mood in ("angry", "sulk") else 1.0  # puffed cheeks
         cheek = (255, 80, 90) if mood == "angry" else PINK
         for side in (-1, 1):
             bcx, bcy = cx + side * bw * 0.34 + lx * 0.5, ey + bh * 0.15
             d.ellipse((bcx - bw * 0.085 * puff, bcy - bh * 0.045 * puff, bcx + bw * 0.085 * puff, bcy + bh * 0.045 * puff),
                       fill=cheek + (190 if mood in ("angry", "sulk") else blush,))
-            if mood in ("love", "puppy"):  # shy lines
+            if mood in ("love", "puppy", "hug"):  # shy lines
                 for i in (-1, 0, 1):
                     xx = bcx + i * bw * 0.035
                     d.line([(xx + bw * 0.012, bcy - bh * 0.03), (xx - bw * 0.012, bcy + bh * 0.03)],
@@ -1417,7 +1506,7 @@ class Pet:
         elif p["yawn"] or mood in ("surprised", "dizzy"):
             r = mw * (0.42 if p["yawn"] else 0.28)
             d.ellipse((mx - r, my - r * 0.7, mx + r, my + r * 1.2), fill=INK + (255,))
-        elif mood in ("typing", "happy", "excited", "love", "dance"):  # open happy smile with tongue
+        elif mood in ("typing", "happy", "excited", "love", "dance", "hug"):  # open happy smile with tongue
             d.chord((mx - mw * 0.75, my - mw * 0.45, mx + mw * 0.75, my + mw * 0.8), 0, 180, fill=INK + (255,))
             d.chord((mx - mw * 0.42, my + mw * 0.05, mx + mw * 0.42, my + mw * 0.78), 0, 180, fill=(255, 120, 150, 255))
         elif mood in ("worried", "sad", "hungry"):
@@ -1434,7 +1523,10 @@ class Pet:
 
         # outfit
         if p["outfit"] != "none":
-            pet_outfits.draw(d, p["outfit"], x0, y0, bw, bh, eyes, er, SS, t)
+            if not pet_props.outfit(d, p["outfit"], x0, y0, bw, bh, SS, t):
+                pet_outfits.draw(d, p["outfit"], x0, y0, bw, bh, eyes, er, SS, t)
+        for item in p.get("props", ()):  # popcorn, glasses, umbrella, note, festival things...
+            pet_props.over(d, item[0], x0, y0, bw, bh, eyes, er, SS, t, font=_font(int(15 * SS * self.scale)))
 
         # extras
         if mood == "dizzy":  # stars circling the head
@@ -1473,17 +1565,26 @@ class Pet:
                 d.text((x, y), "💢", font=_font(int(16 * SS * self.scale)), anchor="mm", embedded_color=True)
             elif kind == "note":
                 d.text((x, y), "🎵", font=_font(int(16 * SS * self.scale)), anchor="mm", embedded_color=True)
+            elif kind == "fire":
+                d.text((x, y), "🔥", font=_font(int(13 * SS * self.scale)), anchor="mm", embedded_color=True)
+            elif kind == "confetti":
+                col = [(255, 90, 140), (255, 210, 60), (90, 200, 255), (130, 230, 120), (190, 140, 255)][int(px * 97) % 5]
+                d.rectangle((x - s * 0.25, y - s * 0.12, x + s * 0.25, y + s * 0.12), fill=col + (a,))
             else:
                 d.text((x, y), "z", font=_font(int(15 * SS * self.scale)), fill=_mix(self._color, (0, 0, 0), 0.3) + (a,),
                        anchor="mm")
 
         # speech bubble / stats / focus timer above BOT (higher if wearing a hat)
         self._chips = []
-        hat = pet_outfits.HAT_HEIGHT * bh if pet_outfits.has_hat(p["outfit"]) else 0
+        hat = pet_outfits.HAT_HEIGHT * bh if (pet_outfits.has_hat(p["outfit"]) or p["outfit"] in ("grad", "halo")
+                                              or any(i[0] in ("umbrella", "kite", "toran") for i in p.get("props", ()))) else 0
         label = p["speech"] or p["stats"] or p["focus"]
         if label:
             sb, chips = self._speech_bubble(label, p["options"], pill=not p["speech"])
-            bx = int(max(0, min(W - sb.width, cx - sb.width / 2)))
+            # keep the bubble on the screen even when BOT stands at the very edge
+            lo = max(0, int((self.bounds[0] - self.x) * SS) + 2 * SS)
+            hi = min(W, int((self.bounds[2] - self.x) * SS) - 2 * SS) - sb.width
+            bx = int(max(lo, min(hi, cx - sb.width / 2))) if hi >= lo else int(max(0, min(W - sb.width, cx - sb.width / 2)))
             by = max(0, int(y0 - hat - sb.height - 2 * SS))
             img.alpha_composite(sb, (bx, by))
             self._chips = [((bx + a) / SS, (by + b) / SS, (bx + c) / SS, (by + e) / SS, v) for a, b, c, e, v in chips]

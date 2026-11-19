@@ -274,10 +274,23 @@ def _m_bare(t: str):
     return Match("open_app" if kind == "app" else "open_site", target=key)
 
 
+def _m_reminder(raw: str, t: str):
+    """'remind me at 5 to call mom' / 'my birthday is 12 March'."""
+    import reminders
+    if reminders.is_reminder(raw):
+        return Match("set_reminder", arg=raw)
+    if re.search(r"my birthday|मेरा जन्मदिन|मेरा बर्थडे|ನನ್ನ ಹುಟ್ಟುಹಬ್ಬ|ನನ್ನ ಬರ್ತ್‌?ಡೇ|నా పుట్టినరోజు|నా బర్త్‌?డే", raw, re.I):
+        return Match("set_birthday", arg=raw)
+    return None
+
+
 def match(raw: str) -> Match | None:
     t = normalize(raw)
     if not t:
         return None
+    m = _m_reminder(raw, t)
+    if m:
+        return m
     for step in (_m_type, _m_url, _m_new_tab, _m_youtube, _m_search, _m_close, _m_open, _m_play_query):
         m = step(raw, t)
         if m:

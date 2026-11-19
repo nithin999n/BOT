@@ -39,6 +39,8 @@ import autostart
 import health
 import router
 import routines
+import pet_world
+import reminders
 import tray as tray_mod
 from desktop_pet import PET
 import screen
@@ -265,7 +267,10 @@ async def watch_forever() -> None:
                 _presence["armed"] = True
             if tick % 2 == 0:
                 for alert in await asyncio.to_thread(watcher.check, h, nearby):
+                    if alert.get("kind") == "unlock" and PET.life.d["options"].get("intruder_photo", True):
+                        await intruder_photo(alert)
                     await push_alert(alert)
+            await travel_check()
             # walk-away lock: phone gone for N minutes, nobody using the PC, not already locked
             wa = CFG.get("walkaway", {})
             if wa.get("enabled") and _presence["armed"] and not nearby:
@@ -282,6 +287,43 @@ async def watch_forever() -> None:
             log.exception("watcher tick failed")
         tick += 1
         await asyncio.sleep(2)
+
+
+_travel = {"manual": 0.0}
+
+
+async def travel_check() -> None:
+    """You left the PC but your phone is connected: BOT follows you to the phone (and comes back)."""
+    fun = PET.fun
+    if fun is None:
+        return
+    idle = health.idle_seconds()
+    if fun.gone and idle < 3 and time.time() - _travel["manual"] > 20:
+        PET.fun_cmd("travel", "pc")
+    elif not fun.gone and SESSIONS and idle >= 600 and PET.wanted:
+        PET.fun_cmd("travel", "phone")
+
+
+async def intruder_photo(alert: dict) -> None:
+    """Someone unlocked the PC while you were away: take a webcam photo for you."""
+    path = str(Path.home() / "Pictures" / "BOT Intruders" / f"unlock_{datetime.now():%Y%m%d_%H%M%S}.jpg")
+    ok = await asyncio.to_thread(pet_world.snap, path)
+    if not ok:
+        return
+    log.info("Intruder photo saved: %s", path)
+    if SESSIONS:
+        alert["message"] += " 📸 I took a photo and sent it to you."
+        asyncio.create_task(send_file_to_phone(path))
+    else:
+        alert["message"] += " 📸 I took a photo (Pictures › BOT Intruders)."
+
+
+async def find_phone() -> None:
+    if SESSIONS:
+        await broadcast(type="find_phone")
+        PET.say("Calling your phone… 📢📱", 4)
+    else:
+        PET.say("Your phone isn't connected 🥺 Open the BOT app on it first", 5)
 
 
 def safe_filename(name: str) -> str:
@@ -796,6 +838,54 @@ async def dispatch(sess: Session, msg: dict) -> None:
             await send(sess.ws, type="result", ok=True, message=text)
             await asyncio.sleep(0.3)
             await send(sess.ws, type="pet_stats", **PET.stats())
+    elif kind == "pet_world":  # the app's "BOT's world" page
+        await send(sess.ws, type="pet_world", **PET.world())
+    elif kind in ("moment_add", "moment_del", "reminder_add", "reminder_del", "set_birthday", "set_option", "pet_fun"):
+        if kind == "moment_add":
+            PET.fun_cmd("moment_add", str(msg.get("text", ""))[:300])
+        elif kind == "moment_del":
+            PET.fun_cmd("moment_del", str(msg.get("id", "")))
+        elif kind == "reminder_add":
+            at = _num(msg.get("at"), 0, 0, 4e9)
+            text = str(msg.get("text", "")).strip()[:200]
+            if at > time.time() and text:
+                PET.fun_cmd("reminder_add", at, text)
+                when = datetime.fromtimestamp(at)
+                await send(sess.ws, type="result", ok=True, message=f"⏰ Reminder set: {reminders.pretty(when)}: {text}")
+        elif kind == "reminder_del":
+            PET.fun_cmd("reminder_del", str(msg.get("id", "")))
+        elif kind == "set_birthday":
+            mmdd = str(msg.get("value", ""))
+            if re.fullmatch(r"\d{2}-\d{2}", mmdd):
+                PET.fun_cmd("set_birthday", mmdd)
+        elif kind == "set_option":
+            PET.fun_cmd("set_option", str(msg.get("key", "")), bool(msg.get("value")))
+            tray_refresh()
+        elif kind == "pet_fun":  # games, travel, feelings, hugs from the app
+            action, value = str(msg.get("action", "")), msg.get("value")
+            if action == "game" and value in ("fetch", "hide", "catch", "bubbles", "rps", "ttt", "photo"):
+                PET.fun_cmd("game_start", value)
+            elif action == "travel" and value in ("phone", "pc"):
+                PET.fun_cmd("travel", value)
+                _travel["manual"] = time.time()
+            elif action == "feel":
+                PET.fun_cmd("set_feel", str(value))
+            elif action == "love":
+                PET.fun_cmd("start_love")
+            elif action == "hug":
+                PET.fun_cmd("phone_hug")
+            elif action == "tidy":
+                PET.fun_cmd("tidy_now")
+            elif action == "untidy":
+                PET.fun_cmd("untidy")
+        await asyncio.sleep(0.4)
+        await send(sess.ws, type="pet_world", **PET.world())
+    elif kind == "media":  # music buttons on the phone
+        if PET.fun:
+            await asyncio.to_thread(PET.fun.media.control, str(msg.get("action", "")))
+    elif kind == "phone_notification":  # a call / message on the phone -> BOT holds up a sign on the PC
+        PET.fun_cmd("phone_note", "call" if msg.get("kind") == "call" else "msg",
+                    str(msg.get("title", ""))[:60], str(msg.get("text", ""))[:120])
     elif kind == "pet_react":  # petting / tapping BOT on the phone makes the desktop BOT react too
         mood = str(msg.get("mood", "happy"))
         if mood in ("happy", "love", "excited", "surprised", "sad"):
@@ -926,7 +1016,9 @@ def make_handler(cfg: dict):
                    pet=PET.wanted, walkaway=CFG.get("walkaway", {}), health=PET.health, pet_stats=PET.stats(),
                    away_alerts=list(ALERTS),
                    features=["cursor", "screen", "touchpad", "keys", "bubble", "ai", "keyword",
-                             "routines", "files", "clipboard", "style", "health", "alerts", "gamepad", "pet"])
+                             "routines", "files", "clipboard", "style", "health", "alerts", "gamepad", "pet",
+                             "world", "travel", "find_phone", "music", "notify"],
+                   now_playing=(PET.fun.media.now if PET.fun else {}))
         ALERTS.clear()
         sess = Session(ws)
         SESSIONS.add(sess)
@@ -992,7 +1084,13 @@ async def main() -> int:
     PET.notify_fn = lambda title, message: asyncio.run_coroutine_threadsafe(
         push_alert({"kind": "bot", "title": title, "message": message, "time": datetime.now().strftime("%H:%M")}), loop)
     PET.send_file_fn = lambda path: asyncio.run_coroutine_threadsafe(send_file_to_phone(path), loop)
+    PET.out_fn = lambda m: asyncio.run_coroutine_threadsafe(broadcast(**m), loop)
     PET.start()
+    snipper = pet_world.SnipHotkey(
+        on_image=lambda path: (PET.say("Snip! ✂️ Sending it to your phone 📲", 3),
+                               asyncio.run_coroutine_threadsafe(send_file_to_phone(path), loop)),
+        save_dir=Path.home() / "Pictures" / "BOT Snips")
+    snipper.start()
     apply_style()
     jobs = [asyncio.create_task(refresh_tailscale_forever()), asyncio.create_task(watch_forever())]
     if cfg.get("keep_awake_when_charging", True):
@@ -1054,9 +1152,32 @@ async def main() -> int:
         toggle_walkaway=from_tray(tray_toggle_walkaway), bring_pet=tray_bring,
         autostart_on=lambda: autostart.LAUNCHER.exists(), set_autostart=tray_set_autostart,
         open_files=lambda: tray_mod.open_folder(str(DOWNLOADS)), quit_bot=tray_quit,
-        extras=[("🍪 Feed BOT a cookie", PET.feed), ("🏃 Play chase", lambda: PET.start_chase(45)),
-                ("🍅 Focus 25 minutes", lambda: PET.start_focus(25)), ("📊 Daily report", PET.show_report),
-                ("💕 Say sorry", PET.apologize)])
+        extras=[
+            ("🍪 Feed BOT a cookie", PET.feed),
+            ("🎮 Games", [("⚽ Fetch", lambda: PET.fun_cmd("game_start", "fetch")),
+                         ("🙈 Hide and seek", lambda: PET.fun_cmd("game_start", "hide")),
+                         ("🍪 Cookie catch", lambda: PET.fun_cmd("game_start", "catch")),
+                         ("🫧 Bubbles", lambda: PET.fun_cmd("game_start", "bubbles")),
+                         ("✊ Rock paper scissors", lambda: PET.fun_cmd("game_start", "rps")),
+                         ("❌ Tic-tac-toe", lambda: PET.fun_cmd("game_start", "ttt")),
+                         ("🏃 Chase", lambda: PET.start_chase(45)),
+                         ("📸 Photo with BOT", lambda: PET.fun_cmd("game_start", "photo"))]),
+            ("💙 BOT", [("💖 Do you love me?", lambda: PET.fun_cmd("start_love")),
+                       ("🍅 Focus 25 minutes", lambda: PET.start_focus(25)),
+                       ("📊 Daily report", PET.show_report),
+                       ("💕 Say sorry", PET.apologize),
+                       ("🧹 Tidy my desktop", lambda: PET.fun_cmd("tidy_now")),
+                       ("↩️ Undo desktop tidy", lambda: PET.fun_cmd("untidy"))]),
+            ("📱 Phone", [("📢 Find my phone", from_tray(find_phone)),
+                         (lambda _i: f"✂️ Snip to phone ({snipper.label})", lambda: _threading.Thread(target=snipper.snip, daemon=True).start()),
+                         ("📲 Send BOT to my phone", lambda: PET.fun_cmd("travel", "phone"))]),
+        ],
+        toggles=[("👏 Clap twice to call BOT", lambda: PET.life.d["options"].get("clap", True),
+                  lambda on: PET.fun_cmd("set_option", "clap", on)),
+                 ("😆 Cursor prank", lambda: PET.life.d["options"].get("cursor_prank", False),
+                  lambda on: PET.fun_cmd("set_option", "cursor_prank", on)),
+                 ("📸 Photo when someone unlocks", lambda: PET.life.d["options"].get("intruder_photo", True),
+                  lambda on: PET.fun_cmd("set_option", "intruder_photo", on))])
     TRAY.start()
 
     try:

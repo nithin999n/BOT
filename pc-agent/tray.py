@@ -43,9 +43,10 @@ class Tray:
     """Callbacks are plain functions; they run on the tray's own thread."""
 
     def __init__(self, *, pet, bubble, cfg: dict, toggle_pet, toggle_bubble, toggle_walkaway,
-                 bring_pet, autostart_on, set_autostart, open_files, quit_bot, extras=()):
+                 bring_pet, autostart_on, set_autostart, open_files, quit_bot, extras=(), toggles=()):
         self.pet, self.bubble, self.cfg = pet, bubble, cfg
-        self.extras = list(extras)  # [(label, callback)] for the "BOT fun" section
+        self.extras = list(extras)    # [(label, callback)] or [(label, [(label, callback)...])] = submenu
+        self.toggles = list(toggles)  # [(label, is_on(), set_on(bool))]
         self._cb = dict(toggle_pet=toggle_pet, toggle_bubble=toggle_bubble, toggle_walkaway=toggle_walkaway,
                         bring_pet=bring_pet, autostart_on=autostart_on, set_autostart=set_autostart,
                         open_files=open_files, quit_bot=quit_bot)
@@ -68,6 +69,20 @@ class Tray:
                 log.exception("tray extra failed")
         return run
 
+    def _extra(self, label, fn):
+        if isinstance(fn, list):
+            return pystray.MenuItem(label, pystray.Menu(*[self._extra(lb, f) for lb, f in fn]))
+        return pystray.MenuItem(label, self._wrap(fn))
+
+    def _toggle(self, label, is_on, set_on):
+        def flip(*_args):
+            try:
+                set_on(not is_on())
+            except Exception:
+                log.exception("tray toggle failed")
+            threading.Timer(0.3, self.refresh).start()
+        return pystray.MenuItem(label, flip, checked=lambda _i: bool(is_on()))
+
     def _show_pin(self, *_args) -> None:
         name = self.cfg.get("style", {}).get("name", "BOT")
         ctypes.windll.user32.MessageBoxW(
@@ -81,9 +96,10 @@ class Tray:
             M(lambda _i: f"{'Hide' if self.pet.wanted else 'Show'} desktop {name}",
               self._safe("toggle_pet"), default=True),       # left-click
             M(f"Bring {name} here", self._safe("bring_pet"), enabled=lambda _i: self.pet.wanted),
-            *[M(label, self._wrap(fn)) for label, fn in self.extras],
+            *[self._extra(label, fn) for label, fn in self.extras],
             pystray.Menu.SEPARATOR,
             M("Desktop BOT", self._safe("toggle_pet"), checked=lambda _i: self.pet.wanted),
+            *[self._toggle(*tg) for tg in self.toggles],
             M("BOT cursor (blue bubble)", self._safe("toggle_bubble"), checked=lambda _i: self.bubble.wanted),
             M("Walk-away lock", self._safe("toggle_walkaway"),
               checked=lambda _i: bool(self.cfg.get("walkaway", {}).get("enabled"))),

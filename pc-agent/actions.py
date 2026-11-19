@@ -388,6 +388,18 @@ ACTIONS = {
                               (True, f"Focus mode: {int(m.arg or 25)} minutes 🍅 BOT will keep you company"))[1],
     "focus_stop": lambda _m: (_pet().stop_focus(), (True, "Focus stopped"))[1],
     "daily_report": lambda _m: (True, _pet().show_report()),
+    "play_fetch": lambda _m: _game("fetch", "Fetch! ⚽ Throw the ball on your PC screen"),
+    "hide_seek": lambda _m: _game("hide", "Hide and seek! 🙈 Find BOT on your PC screen"),
+    "cookie_catch": lambda _m: _game("catch", "Cookie rain! 🍪 Move your mouse to catch them"),
+    "blow_bubbles": lambda _m: _game("bubbles", "Bubbles! 🫧 Pop them on your PC screen"),
+    "play_rps": lambda _m: _game("rps", "Rock, paper, scissors on your PC! ✊✋✌️"),
+    "play_ttt": lambda _m: _game("ttt", "Tic-tac-toe on your PC! ❌⭕"),
+    "photo_booth": lambda _m: _game("photo", "Smile at your webcam! 📸"),
+    "tidy_desktop": lambda _m: (_pet().fun_cmd("tidy_now"), (True, "Tidying your desktop 🧹 (nothing gets deleted)"))[1],
+    "untidy_desktop": lambda _m: (_pet().fun_cmd("untidy"), (True, "Putting your desktop files back ↩️"))[1],
+    "love_you": lambda _m: (_pet().fun_cmd("heard_love"), (True, "BOT loves you too!! 💖🥰"))[1],
+    "set_reminder": lambda m: _reminder(m.arg),
+    "set_birthday": lambda m: _birthday(m.arg),
     "pet_off": lambda _m: (True, "Desktop BOT is hiding 🙈"),  # switches flipped in bot_agent
     "pet_on": lambda _m: (True, "Desktop BOT is back! 👋"),
     "bubble_off": lambda _m: (True, "BOT cursor hidden"),   # the switch itself is flipped in bot_agent
@@ -411,12 +423,39 @@ POINTER_LABELS = {
 }
 # No bubble for these (screen is about to lock / turn off, or the text is too long).
 NO_BUBBLE = {"lock", "shutdown", "restart", "sleep", "help", "bubble_off", "feed_bot", "play_chase", "say_sorry",
-             "focus_start", "focus_stop", "daily_report"}
+             "focus_start", "focus_stop", "daily_report", "play_fetch", "hide_seek", "cookie_catch", "blow_bubbles",
+             "play_rps", "play_ttt", "photo_booth", "tidy_desktop", "untidy_desktop", "love_you", "set_reminder",
+             "set_birthday"}
 
 
 def _pet():
     from desktop_pet import PET  # imported lazily (desktop_pet is only needed on the PC agent)
     return PET
+
+
+def _game(name: str, message: str):
+    _pet().fun_cmd("game_start", name)
+    return True, message
+
+
+def _reminder(text: str):
+    import reminders
+    found = reminders.parse(text)
+    if not found:
+        return False, "Tell me when ⏰ e.g. \"remind me at 5 to call mom\" or \"remind me in 10 minutes to stretch\""
+    when, what = found
+    _pet().fun_cmd("reminder_add", when.timestamp(), what)
+    return True, f"⏰ I'll remind you {reminders.pretty(when)}: {what}"
+
+
+def _birthday(text: str):
+    import reminders
+    mmdd = reminders.parse_birthday(text)
+    if not mmdd:
+        return False, "Tell me like \"my birthday is 12 March\" 🎂"
+    _pet().fun_cmd("set_birthday", mmdd)
+    from datetime import datetime as _dt
+    return True, f"🎂 Saved! Your birthday is {_dt.strptime('2000-' + mmdd, '%Y-%m-%d'):%d %B}. BOT will celebrate!"
 
 
 def execute(m: Match):
