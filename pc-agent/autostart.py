@@ -60,7 +60,9 @@ def set_key() -> None:
         sys.exit("That doesn't look like an Anthropic API key (it should start with sk-ant-).")
     cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     cfg["anthropic_api_key"] = key
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    tmp = CONFIG_PATH.with_name("config.json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, CONFIG_PATH)
     print("Saved. Restarting BOT so it picks up the key…")
     stop()
     start_now()
@@ -145,7 +147,10 @@ def status() -> None:
     print(f"Running in background : {'yes (pid %d)' % pid if pid else 'no'}")
     print(f"Starts with Windows   : {'yes' if LAUNCHER.exists() else 'no'}")
     if CONFIG_PATH.exists():
-        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        try:
+            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except ValueError:
+            cfg = {}  # damaged: BOT repairs it from the backup when it starts
         print(f"PIN                   : {cfg.get('pin')}")
         print(f"AI tasks (API key)    : {'ready' if cfg.get('anthropic_api_key') else 'not set (run set_api_key.bat)'}")
     print(f"Log file              : {HERE / 'bot.log'}")

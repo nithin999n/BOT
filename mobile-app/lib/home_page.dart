@@ -478,6 +478,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addLog(e.message, ok: e.ok);
       case 'alert':
         _showAlert(e.id, e.message);
+      case 'clip_push':
+        HapticFeedback.mediumImpact();
+        final short = e.message.length > 60 ? '${e.message.substring(0, 60)}…' : e.message;
+        _addLog('📋 From the PC (copied): $short');
+        _say('Copied from your PC! 📋 Paste it anywhere');
+        _flashMood(Mood.happy);
       case 'find_phone':
         _flashMood(Mood.excited, const Duration(seconds: 3));
         showFindPhone(context);

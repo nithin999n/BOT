@@ -1,7 +1,7 @@
 name: bot_app
 description: BOT - control your PC with your voice.
 publish_to: "none"
-version: 1.0.1+14
+version: 1.1.0+15
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

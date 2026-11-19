@@ -131,6 +131,41 @@ def parse_birthday(text: str) -> str | None:
     return f"{month:02d}-{day:02d}"
 
 
+TODO_RE = [re.compile(r"^(?:please\s+)?(?:add|put|write)\s+(.+?)\s+(?:to|on|in|into)\s+(?:my\s+|the\s+)?"
+                       r"(?:to-?do|todo|to do)(?:\s+list)?\s*$", re.I),
+           re.compile(r"^(?:please\s+)?(?:add|put|write)\s+(.+?)\s+(?:to|on|in|into)\s+my\s+list\s*$", re.I),
+           re.compile(r"^(?:to-?do|todo|to do)\s*:?\s+(.+)$", re.I)]
+
+
+def parse_todo(text: str) -> str | None:
+    t = text.strip().rstrip(".!")
+    for rx in TODO_RE:
+        m = rx.match(t)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def parse_countdown(text: str, today: datetime | None = None) -> tuple[str, str] | None:
+    """'countdown to my exam on 12 December' -> ('my exam', '2026-12-12')."""
+    m = re.search(r"count\s*-?down\s+(?:to|for|until|till)\s+(.+?)\s+(?:on|is on|at)\s+(.+)$", text.strip(), re.I)
+    if not m:
+        return None
+    name, when = m.group(1).strip(), m.group(2)
+    mmdd = parse_birthday(when)
+    if not mmdd:
+        return None
+    today = today or datetime.now()
+    year = today.year
+    y = re.search(r"\b(20\d\d)\b", when)
+    if y:
+        year = int(y.group(1))
+    d = datetime.strptime(f"{year}-{mmdd}", "%Y-%m-%d")
+    if not y and d.date() < today.date():
+        d = d.replace(year=year + 1)
+    return name, d.strftime("%Y-%m-%d")
+
+
 def pretty(when: datetime, now: datetime | None = None) -> str:
     now = now or datetime.now()
     clock = when.strftime("%I:%M %p").lstrip("0")

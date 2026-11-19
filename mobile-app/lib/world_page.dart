@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'chat_page.dart';
 import 'connection.dart';
 import 'face.dart';
 import 'style.dart';
@@ -31,6 +32,7 @@ class WorldPage extends StatefulWidget {
 class _WorldPageState extends State<WorldPage> {
   BotConnection get conn => widget.conn;
   final _moment = TextEditingController();
+  final _todo = TextEditingController();
 
   @override
   void initState() {
@@ -43,6 +45,7 @@ class _WorldPageState extends State<WorldPage> {
   void dispose() {
     conn.removeListener(_changed);
     _moment.dispose();
+    _todo.dispose();
     super.dispose();
   }
 
@@ -127,6 +130,45 @@ class _WorldPageState extends State<WorldPage> {
     var at = DateTime(day.year, day.month, day.day, time!.hour, time!.minute);
     if (at.isBefore(DateTime.now())) at = at.add(const Duration(days: 1));
     conn.send({'type': 'reminder_add', 'at': at.millisecondsSinceEpoch / 1000, 'text': text.text.trim()});
+  }
+
+  Future<void> _addCountdown() async {
+    final name = TextEditingController();
+    DateTime? day;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: const Text('New countdown 📅'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: name, autofocus: true, decoration: const InputDecoration(hintText: 'e.g. My exam')),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.calendar_today, size: 18),
+              label: Text(day == null ? 'Pick the date' : '${day!.day} ${_months[day!.month - 1]} ${day!.year}'),
+              onPressed: () async {
+                final d = await showDatePicker(
+                    context: ctx,
+                    initialDate: DateTime.now().add(const Duration(days: 7)),
+                    firstDate: DateTime.now(),
+                    lastDate: DateTime.now().add(const Duration(days: 3650)));
+                if (d != null) setS(() => day = d);
+              },
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || day == null || name.text.trim().isEmpty || !_online()) return;
+    final d = day!;
+    conn.petFun('countdown_add', {
+      'name': name.text.trim(),
+      'date': '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}'
+    });
   }
 
   Future<void> _pickBirthday(String current) async {
@@ -257,6 +299,116 @@ class _WorldPageState extends State<WorldPage> {
                     padding: const EdgeInsets.only(top: 8),
                     child: Text('🏆 Cookie catch best: ${w['catch_best']}', textAlign: TextAlign.center),
                   ),
+              ]),
+              _section('Fun', icon: Icons.celebration, [
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  FilledButton.tonal(
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatPage(conn: conn))),
+                      child: const Text('💬 Talk to BOT')),
+                  FilledButton.tonal(onPressed: () => _fun('dance'), child: const Text('🪩 Dance party')),
+                  FilledButton.tonal(onPressed: () => _fun('rain'), child: const Text('🌧️ Make it rain')),
+                  FilledButton.tonal(onPressed: () => _fun('snow'), child: const Text('❄️ Make it snow')),
+                  FilledButton.tonal(onPressed: () => _fun('joke'), child: const Text('😂 Joke')),
+                ]),
+              ]),
+              _section('Coins & shop 🪙 ${w['coins'] ?? 0}', icon: Icons.storefront, [
+                Text('Earn coins by playing games, focusing, feeding BOT, finishing to-dos and drinking water.',
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+                const SizedBox(height: 8),
+                for (final kind in const [('outfit', 'Outfits'), ('decor', 'For BOT\'s house 🏠'), ('treat', 'Treats')]) ...[
+                  Text(kind.$2, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    for (final it in ((w['shop'] as List?) ?? const []).cast<Map>().where((it) => it['kind'] == kind.$1))
+                      ActionChip(
+                        label: Text(((w['owned'] as List?) ?? const []).contains(it['id']) && kind.$1 != 'treat'
+                            ? '${it['name']} ✓'
+                            : '${it['name']}  🪙${it['price']}'),
+                        onPressed: ((w['owned'] as List?) ?? const []).contains(it['id']) && kind.$1 != 'treat'
+                            ? null
+                            : () => _fun('buy', it['id']),
+                      ),
+                  ]),
+                  const SizedBox(height: 10),
+                ],
+              ]),
+              _section('To-do list 📝', icon: Icons.checklist, [
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _todo,
+                      decoration: const InputDecoration(hintText: 'Add a task…'),
+                      onSubmitted: (_) {
+                        final t = _todo.text.trim();
+                        if (t.isEmpty || !_online()) return;
+                        conn.petFun('todo_add', t);
+                        _todo.clear();
+                      },
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle),
+                    onPressed: () {
+                      final t = _todo.text.trim();
+                      if (t.isEmpty || !_online()) return;
+                      conn.petFun('todo_add', t);
+                      _todo.clear();
+                    },
+                  ),
+                ]),
+                for (final t in ((w['todos'] as List?) ?? const []).cast<Map>())
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    value: t['done'] == true,
+                    onChanged: (_) => conn.petFun('todo_toggle', t['id']),
+                    title: Text('${t['text']}',
+                        style: TextStyle(decoration: t['done'] == true ? TextDecoration.lineThrough : null)),
+                    secondary: IconButton(
+                        icon: const Icon(Icons.delete_outline, size: 20),
+                        onPressed: () => conn.petFun('todo_del', t['id'])),
+                  ),
+                Text('BOT does a happy dance on the PC for every task you finish 🎉',
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+              ]),
+              _section('Water 💧 ${w['water'] ?? 0}/${w['water_goal'] ?? 8}', icon: Icons.water_drop, [
+                LinearProgressIndicator(
+                  value: (((w['water'] as num?) ?? 0) / ((w['water_goal'] as num?) ?? 8)).clamp(0.0, 1.0).toDouble(),
+                  minHeight: 10,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.tonalIcon(
+                      onPressed: () => _fun('water'), icon: const Text('💧'), label: const Text('I drank a glass')),
+                ),
+                Text('Or click the glass next to BOT on the PC', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+              ]),
+              _section('Countdowns 📅', icon: Icons.event, [
+                for (final c in ((w['countdowns'] as List?) ?? const []).cast<Map>())
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('${c['name']}'),
+                    subtitle: Text(() {
+                      final d = DateTime.tryParse('${c['date']}');
+                      if (d == null) return '${c['date']}';
+                      final today = DateTime.now();
+                      final left = DateTime(d.year, d.month, d.day).difference(DateTime(today.year, today.month, today.day)).inDays;
+                      return left == 0 ? 'Today! 🎉' : (left > 0 ? '$left days to go' : 'Done');
+                    }()),
+                    trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline, size: 20),
+                        onPressed: () => conn.petFun('countdown_del', c['id'])),
+                  ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                      onPressed: _addCountdown, icon: const Icon(Icons.add), label: const Text('Add countdown')),
+                ),
+                Text('Your birthday countdown is automatic 🎂', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
               ]),
               if (playing['title'] != null && '${playing['title']}'.isNotEmpty && playing['playing'] == true)
                 _section('Playing on the PC', icon: Icons.music_note, [
@@ -404,6 +556,13 @@ class _WorldPageState extends State<WorldPage> {
                     style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
               ]),
               _section('Settings', icon: Icons.tune, [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Cute sounds 🔊'),
+                  subtitle: const Text('Little robot chirps and boings on the PC'),
+                  value: opts['sounds'] == true,
+                  onChanged: (v) => conn.send({'type': 'set_option', 'key': 'sounds', 'value': v}),
+                ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Clap twice to call BOT 👏'),

@@ -27,9 +27,35 @@ def under(d, kind: str, x0, y0, bw, bh, ss, t) -> None:
                 d.ellipse((cx - r, cy - r * 0.8, cx + r, cy + r * 0.8), fill=col + (150,))
 
 
-def over(d, kind: str, x0, y0, bw, bh, eyes, er, ss, t, font=None) -> None:
+def over(d, kind: str, x0, y0, bw, bh, eyes, er, ss, t, font=None, arg=None) -> None:
     """Drawn on top of BOT."""
     cx = x0 + bw / 2
+    if kind == "glass":  # water glass standing next to BOT (fills up as you drink)
+        gx0, gx1 = x0 - bw * 0.36, x0 - bw * 0.1
+        gy0, gy1 = y0 + bh * 0.52, y0 + bh * 1.0
+        fill = max(0.0, min(1.0, float(arg or 0)))
+        d.polygon([(gx0, gy0), (gx1, gy0), (gx1 - bw * 0.03, gy1), (gx0 + bw * 0.03, gy1)],
+                  outline=(200, 225, 245, 255), fill=(230, 245, 255, 70))
+        if fill > 0:  # the water (drawn after the glass so it isn't covered)
+            wy = gy1 - (gy1 - gy0) * 0.9 * fill
+            d.polygon([(gx0 + bw * 0.025, wy), (gx1 - bw * 0.025, wy),
+                       (gx1 - bw * 0.035, gy1 - bh * 0.02), (gx0 + bw * 0.035, gy1 - bh * 0.02)], fill=(110, 190, 255, 230))
+        d.line([(gx0 + bw * 0.05, gy0 + bh * 0.06), (gx0 + bw * 0.06, gy1 - bh * 0.08)], fill=(255, 255, 255, 170),
+               width=int(2 * ss))
+        if font is not None and fill >= 1:
+            d.text(((gx0 + gx1) / 2, gy0 - bh * 0.1), "🏆", font=font, anchor="mm", embedded_color=True)
+        return
+    if kind == "ears":  # little round ears pop out while you change the volume
+        for side in (-1, 1):
+            ex, ey = cx + side * bw * 0.36, y0 + bh * 0.04
+            d.ellipse((ex - bw * 0.11, ey - bh * 0.13, ex + bw * 0.11, ey + bh * 0.1), fill=(98, 168, 255, 255),
+                      outline=(40, 105, 210, 255), width=int(2 * ss))
+            d.ellipse((ex - bw * 0.06, ey - bh * 0.07, ex + bw * 0.06, ey + bh * 0.05), fill=(255, 170, 205, 255))
+        return
+    if kind == "clipboard":
+        if font is not None:
+            d.text((x0 + bw * 1.0, y0 + bh * 0.62), "📋", font=font, anchor="mm", embedded_color=True)
+        return
     if kind == "glasses":  # round nerd glasses
         for ex, ey in eyes:
             r = er * 1.5
@@ -150,7 +176,36 @@ def over(d, kind: str, x0, y0, bw, bh, eyes, er, ss, t, font=None) -> None:
 
 
 def outfit(d, kind: str, x0, y0, bw, bh, ss, t) -> bool:
-    """New outfits unlocked with badges. Returns True if it drew one."""
+    """Outfits from badges and the shop. Returns True if it drew one."""
+    if kind == "bunny":
+        for side in (-1, 1):
+            ex = x0 + bw * (0.5 + side * 0.2)
+            tilt = side * bw * 0.06 + math.sin(t * 2 + side) * bw * 0.015
+            d.ellipse((ex - bw * 0.09 + tilt, y0 - bh * 0.5, ex + bw * 0.09 + tilt, y0 + bh * 0.12), fill=(250, 250, 255, 255),
+                      outline=(215, 215, 230, 255), width=int(2 * ss))
+            d.ellipse((ex - bw * 0.045 + tilt, y0 - bh * 0.4, ex + bw * 0.045 + tilt, y0 + bh * 0.02), fill=(255, 170, 205, 255))
+        return True
+    if kind == "chef":
+        cx = x0 + bw * 0.5
+        d.rounded_rectangle((cx - bw * 0.24, y0 - bh * 0.05, cx + bw * 0.24, y0 + bh * 0.12), radius=bh * 0.03,
+                            fill=(250, 250, 252, 255), outline=(215, 215, 225, 255), width=int(2 * ss))
+        for ox, r in ((-0.17, 0.15), (0.0, 0.19), (0.17, 0.15)):
+            d.ellipse((cx + bw * ox - bw * r, y0 - bh * 0.42, cx + bw * ox + bw * r, y0 + bh * 0.02), fill=(250, 250, 252, 255),
+                      outline=(215, 215, 225, 255), width=int(2 * ss))
+        d.rectangle((cx - bw * 0.235, y0 - bh * 0.06, cx + bw * 0.235, y0 + bh * 0.02), fill=(250, 250, 252, 255))
+        return True
+    if kind == "cowboy":
+        cx = x0 + bw * 0.5
+        d.ellipse((cx - bw * 0.5, y0 - bh * 0.02, cx + bw * 0.5, y0 + bh * 0.14), fill=(150, 95, 55, 255))
+        d.rounded_rectangle((cx - bw * 0.24, y0 - bh * 0.3, cx + bw * 0.24, y0 + bh * 0.07), radius=bh * 0.1,
+                            fill=(170, 110, 65, 255))
+        d.rectangle((cx - bw * 0.24, y0 - bh * 0.04, cx + bw * 0.24, y0 + bh * 0.03), fill=(90, 55, 35, 255))
+        return True
+    if kind == "beret":
+        cx = x0 + bw * 0.42
+        d.ellipse((cx - bw * 0.36, y0 - bh * 0.2, cx + bw * 0.3, y0 + bh * 0.1), fill=(220, 50, 70, 255))
+        d.line([(cx - bw * 0.02, y0 - bh * 0.2), (cx + bw * 0.02, y0 - bh * 0.28)], fill=(220, 50, 70, 255), width=int(4 * ss))
+        return True
     if kind == "flower":  # flower crown
         for i in range(7):
             fx = x0 + bw * (0.14 + i * 0.12)

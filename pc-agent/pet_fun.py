@@ -16,6 +16,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pet_sprites as sp
+from pet_more import More
 import pet_world as world
 import win_input
 from overlay import user32
@@ -116,6 +117,8 @@ class Fun:
         self.baby_hop = 0.0
         self.toys: list[sp.Sprite] = []
         self.started = False
+        self.more: More | None = None
+        self._fx_check = 0.0
 
     # ------------------------------------------------------------------ helpers
     def say(self, st, text, secs=4.0, opts=()):
@@ -124,8 +127,29 @@ class Fun:
     def react(self, st, mood, secs=2.0):
         st["react"], st["react_until"] = mood, time.perf_counter() + secs
 
+    def invisible(self) -> bool:
+        return self.gone is True or bool(self.game and self.game.get("phase") == "vanish") \
+            or bool(self.more and self.more.inside)
+
+    def more_cmd(self, st, action, value=None):
+        if not self.more:
+            return
+        if action == "house_click":
+            self.more.click_house(st)
+        else:
+            self.more.cmd(st, action, value)
+
+    def sound(self, name):
+        if self.more:
+            self.more.sound(name)
+
+    def coins(self, st, n):
+        if self.more:
+            self.more.coins(st, n)
+
     def badges(self, st, new):
         for _bid, name in new:
+            self.coins(st, 20)
             self.say(st, f"New badge! 🏅 {name}", 5)
             self.pet._burst(st, "sparkle", 10)
             self.pet._notify("New badge! 🏅", name)
@@ -166,6 +190,7 @@ class Fun:
         if self.started:
             return
         self.started = True
+        self.more = More(self)
         self.weather.start()
         self.media.start()
         self.clap.set_enabled(bool(self.life.d["options"].get("clap", True)))
@@ -189,6 +214,8 @@ class Fun:
             return
         self.end_game(st, quiet=True)
         self.love = None
+        if self.more:
+            self.more.come_out(st, quiet=True)
         p = self.pet
         p.chase_until, p.peek_side = 0.0, 0
         now = time.perf_counter()
@@ -244,6 +271,9 @@ class Fun:
 
     def on_clap(self, st):
         p = self.pet
+        if self.more and self.more.inside:
+            self.more.come_out(st)
+            return
         if not p.wanted or self.gone or self.busy_now():
             return
         cx = (p.bounds[0] + p.bounds[2]) / 2 - p.W / 2
@@ -275,7 +305,7 @@ class Fun:
         self.life.save(force=True)
 
     def set_option(self, st, key, value):
-        if key in ("cursor_prank", "clap", "intruder_photo"):
+        if key in ("cursor_prank", "clap", "intruder_photo", "sounds"):
             self.life.d["options"][key] = bool(value)
             self.life._dirty = True
             self.life.save(force=True)
@@ -311,6 +341,8 @@ class Fun:
         if where == "phone" and not self.gone:
             if self.busy_now() or not p.wanted:
                 return
+            if self.more:
+                self.more.come_out(st, quiet=True)
             self.perch = None
             left, right, _t, _f = p._limits()
             self.gone = "leaving"
@@ -361,6 +393,7 @@ class Fun:
     def photo_done(self, st, ok, path):
         if ok:
             self.count(st, "photos")
+            self.coins(st, 2)
             self.say(st, "Cheese! 📸 Sent to your phone 💙", 5)
             self.react(st, "love", 2)
             if self.pet.send_file_fn:
@@ -395,6 +428,7 @@ class Fun:
             found_in = time.perf_counter() - g["t0"]
             self.end_game(st, quiet=True)
             self.count(st, "found")
+            self.coins(st, 5)
             self.say(st, f"You found me! 🙈 ({found_in:.0f} s)", 4)
             self.react(st, "excited", 2.5)
             self.pet._burst(st, "heart", 6)
@@ -413,6 +447,8 @@ class Fun:
     def answer(self, st, key, val) -> bool:
         now = time.perf_counter()
         p = self.pet
+        if self.more and self.more.answer(st, key, val):
+            return True
         if key == "love":
             if not self.love:
                 return False
@@ -420,17 +456,20 @@ class Fun:
             if val == "hmm":
                 lv["left"] += 2
                 lv["cry_until"] = now + 2.6
+                self.sound("sad")
                 self.say(st, random.choice(LOVE_HMM), 2.6)
                 return True
             self.count(st, "love_yes")
             self.life.cheer(happy=2)
             p._burst(st, "heart", 3)
+            self.sound("happy")
             lv["left"] -= 1
             if lv["left"] <= 0:
                 self.love = None
                 self.say(st, random.choice(LOVE_END), 5)
                 self.react(st, "love", 4)
                 p._burst(st, "heart", 14)
+                self.coins(st, 3)
                 if self.life.add_xp(3):
                     p._level_up(st)
             else:
@@ -531,6 +570,7 @@ class Fun:
         elif wins[choice] == mine:
             g["you"] += 1
             self.count(st, "rps_wins")
+            self.coins(st, 1)
             res = "You win! 🎉"
             self.react(st, "sad", 1.5)
         else:
@@ -582,6 +622,7 @@ class Fun:
             self.count(st, "ttt_games")
             if w == "x":
                 self.count(st, "ttt_wins")
+                self.coins(st, 5)
                 text, mood = "You win!! 🎉 You're so smart!", "surprised"
             elif w == "o":
                 text, mood = "I win! 😆⭕", "excited"
@@ -619,6 +660,8 @@ class Fun:
             self.hugging = True
             self.count(st, "hugs")
             self.life.cheer(happy=6)
+            self.coins(st, 1)
+            self.sound("chirp")
             self.say(st, random.choice(HUG), 30)
             p._burst(st, "heart", 6)
             self.out({"type": "pet_event", "event": "hug"})
@@ -774,7 +817,15 @@ class Fun:
                                     0.0, -0.2, 0.7])
         # baby BOT
         self._baby_frame(st, now, t)
+        # house, coins, water glass, shortcuts, night light, rain/snow, dance party
+        if self.more:
+            self.more.frame(st, now, t, ctx, fx)
+            if now > self._fx_check:
+                self._fx_check = now + 60
+                self.more.maybe_weather_fx(st, self.weather.now, st["idle"] < 60 and not self.fg.get("fullscreen"))
         if self.gone:
+            fx["quiet"] = True
+        if self.more and self.more.going_home:
             fx["quiet"] = True
         return fx
 
@@ -924,6 +975,9 @@ class Fun:
             self.say(st, f"Remember this? 😊 “{m['text'][:120]}”", 10)
             self.react(st, "love", 3)
             return True
+        # joke of the day, countdowns, good thing today, to-do nudges, shy BOT
+        if self.more and self.more.chatter(st, now, hour, mood):
+            return True
         # sweet words
         if now > self.next_sweet:
             self.next_sweet = now + random.uniform(45, 90) * 60
@@ -957,6 +1011,8 @@ class Fun:
         self.end_game(st, quiet=True)
         self.love = None
         self.perch = None
+        if self.more:
+            self.more.come_out(st, quiet=True)
         self.reminder = {"text": r["text"], "until": now + 120}
         cx = (p.bounds[0] + p.bounds[2]) / 2 - p.W / 2
         if p.y < p._limits()[3] - 2:
@@ -1140,6 +1196,7 @@ class Fun:
                         ball.data["busy"] = True
                         g["phase"] = "carry"
                         self.count(st, "fetches")
+                        self.coins(st, 1)
                         mx, _my = win_input.cursor_pos()
                         self.walk_to(mx - p.W / 2, 380)
                     else:
@@ -1170,6 +1227,7 @@ class Fun:
                 best = int(self.life.d["counts"].get("catch_best", 0))
                 self.count(st, "catch_games")
                 self.count(st, "catch_best", score, best=True)
+                self.coins(st, max(1, score // 2))
                 self.life.cheer(happy=10, hunger=min(30, score * 2))
                 self.say(st, f"You caught {score} cookies! 🍪{' New record! 🏆' if score > best else f' (best: {best})'}", 6)
                 self.react(st, "love", 2)
@@ -1219,6 +1277,7 @@ class Fun:
                 if b.events:
                     b.events.clear()
                     g["popped"] += 1
+                    self.sound("pop")
                     self.count(st, "bubbles")
                     b.data["popped"] = now
                     b.show(sp.pop_image(b.w))
@@ -1240,6 +1299,7 @@ class Fun:
                 n = g["popped"]
                 self.end_game(st, quiet=True)
                 self.count(st, "bubble_games")
+                self.coins(st, max(1, n // 2))
                 self.say(st, f"You popped {n}/10 bubbles! 🫧{' Perfect!! 🏆' if n == 10 else ''}", 5)
                 self.react(st, "happy", 2)
         elif name == "hide":

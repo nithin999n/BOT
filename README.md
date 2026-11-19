@@ -136,6 +136,20 @@ Look in the **^** area next to the clock (drag the icon onto the taskbar to keep
   - 📱 BOT follows you to your phone after 10 idle minutes and comes back when you do. 📢 Find my phone (tray).
     ✂️ Snip to phone: **Ctrl+Alt+P**. 📸 Photo when someone unlocks the PC while you're away (switch in the app).
     (Showing phone calls on the PC was removed: Google Play Protect blocks sideloaded apps that read notifications.)
+- **v1.1: BOT's home & everyday buddy stuff**
+  - 🏠 BOT has a tiny house in the bottom-left corner: it sleeps inside at night, hides in it when shy, and comes out when
+    you click the house ("You knocked! 🚪").
+  - 🪙 Coins from games, focus, feeding, to-dos and water → **shop** in the app: bunny ears, chef hat, cowboy hat, beret,
+    house decorations (flowers, fairy lights, mailbox, tree, flag, pink paint) and treats (cake, ice cream, pizza, donut).
+  - 🔊 Cute sounds (off by default, tray / app). 🖱️ **Scroll on BOT to change the volume.**
+  - 📋 **Drag text or a link onto BOT** → it lands on your phone's clipboard (files still go to Download/BOT).
+  - 💾 Ctrl+S → "Saved! 💾", Ctrl+Z → "Oopsie, undo! 🙈", Ctrl+C → BOT holds a clipboard (only these combos are noticed).
+  - 📝 To-do list (app, tray, or "add buy milk to my list"), 💧 water glass next to BOT (click it), 📅 countdowns
+    ("countdown to my exam on 12 December"), 😂 joke / fact of the day, ✨ "one good thing today" at night,
+    🌙 night light, 🌧️❄️ rain / snow on the screen when it's really raining, 🪩 dance party.
+  - 💬 **Talk to BOT**: tray → 💙 BOT → Talk to BOT, or the app. Free cute replies; for real AI paste a free Google Gemini
+    key (tray → 🔑 Gemini key).
+  - Settings are saved crash-proof (temp file + backup), so a power cut can't wipe them.
 - **Control → Air mouse:** hold the pad and point your phone like a TV remote. Tap to click, and use ◀ ▶ for slides.
 - **Control → Gamepad:** a landscape joystick (WASD or arrows) plus Jump/E/F/Q/R/Shift/Ctrl/Esc/Tab/Enter.
   Every key can be held, and the keys are sent as hardware key presses, so games notice them.

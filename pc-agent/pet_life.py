@@ -17,7 +17,9 @@ log = logging.getLogger("bot")
 
 # outfits you unlock by levelling BOT up (the others are always available)
 OUTFIT_UNLOCK = {"bow": 2, "sunglasses": 3, "party": 4, "crown": 5}
-OUTFITS = ["auto", "none", "bow", "sunglasses", "party", "crown", "santa", "headband", "cap", "flower", "grad", "halo"]
+OUTFITS = ["auto", "none", "bow", "sunglasses", "party", "crown", "santa", "headband", "cap", "flower", "grad", "halo",
+           "bunny", "chef", "cowboy", "beret"]
+SHOP_OUTFIT_PRICE = {"bunny": 30, "chef": 30, "cowboy": 40, "beret": 25}  # bought with coins (see pet_more.SHOP)
 BADGE_OUTFITS = {"flower": "fed_7", "grad": "focus_10", "halo": "love_100"}  # outfits a badge unlocks
 
 # ---- badges (achievements) -------------------------------------------------------------
@@ -129,6 +131,8 @@ class Life:
         return min(99, 1 + int(self.d["xp"] // 100))
 
     def unlocked(self, outfit: str) -> bool:
+        if outfit in SHOP_OUTFIT_PRICE:
+            return outfit in self.d.get("owned", [])
         if outfit in BADGE_OUTFITS:
             return BADGE_OUTFITS[outfit] in self.d["badges"]
         return self.level >= OUTFIT_UNLOCK.get(outfit, 1)
@@ -318,13 +322,15 @@ class Life:
                 "happy": round(self.d["happy"]), "outfit": self.d.get("outfit", "auto"),
                 "unlocked": [o for o in OUTFITS if self.unlocked(o)],
                 "unlock_at": {**OUTFIT_UNLOCK, **{o: next(n for b, n, *_ in BADGES if b == bid)
-                                                  for o, bid in BADGE_OUTFITS.items()}}}
+                                                  for o, bid in BADGE_OUTFITS.items()},
+                              **{o: f"🪙 {p} in the shop" for o, p in SHOP_OUTFIT_PRICE.items()}}}
 
 
 # ---- key counter (counts presses only; never which key) --------------------------------
 class KeyCounter:
     def __init__(self):
         self.count = 0
+        self.combo = None  # ("save" / "undo" / "copy", time): only Ctrl+S, Ctrl+Z, Ctrl+C are noticed
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -345,6 +351,13 @@ class KeyCounter:
         def proc(n_code, w_param, l_param):
             if n_code >= 0 and w_param in (0x0100, 0x0104):  # WM_KEYDOWN / WM_SYSKEYDOWN
                 self.count += 1
+                try:
+                    vk = ctypes.cast(l_param, ctypes.POINTER(ctypes.c_uint32))[0]
+                    if vk in (0x53, 0x5A, 0x43) and user32.GetAsyncKeyState(0x11) & 0x8000 \
+                            and not user32.GetAsyncKeyState(0x12) & 0x8000:
+                        self.combo = ({0x53: "save", 0x5A: "undo", 0x43: "copy"}[vk], time.time())
+                except Exception:
+                    pass
             return user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         self._proc = HOOKPROC(proc)  # keep a reference

@@ -279,6 +279,11 @@ def _m_reminder(raw: str, t: str):
     import reminders
     if reminders.is_reminder(raw):
         return Match("set_reminder", arg=raw)
+    todo = reminders.parse_todo(raw)
+    if todo:
+        return Match("add_todo", arg=todo)
+    if re.search(r"count\s*-?down", raw, re.I) and reminders.parse_countdown(raw):
+        return Match("add_countdown", arg=raw)
     if re.search(r"my birthday|मेरा जन्मदिन|मेरा बर्थडे|ನನ್ನ ಹುಟ್ಟುಹಬ್ಬ|ನನ್ನ ಬರ್ತ್‌?ಡೇ|నా పుట్టినరోజు|నా బర్త్‌?డే", raw, re.I):
         return Match("set_birthday", arg=raw)
     return None

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -319,6 +320,14 @@ class BotConnection extends ChangeNotifier {
         nowPlaying.value = msg;
       case 'find_phone':
         _events.add(const BotEvent('find_phone', ''));
+      case 'clip_push': // text / a link dropped on the desktop BOT -> this phone's clipboard
+        final t = (msg['text'] ?? '').toString();
+        if (t.isNotEmpty) {
+          Clipboard.setData(ClipboardData(text: t));
+          _events.add(BotEvent('clip_push', t));
+        }
+      case 'chat_reply':
+        _events.add(BotEvent('chat_reply', (msg['text'] ?? '').toString()));
       case 'pet_travel':
         botOnPhone = msg['where'] == 'phone';
         notifyListeners();

@@ -399,6 +399,15 @@ ACTIONS = {
     "untidy_desktop": lambda _m: (_pet().fun_cmd("untidy"), (True, "Putting your desktop files back ↩️"))[1],
     "love_you": lambda _m: (_pet().fun_cmd("heard_love"), (True, "BOT loves you too!! 💖🥰"))[1],
     "set_reminder": lambda m: _reminder(m.arg),
+    "add_todo": lambda m: (_pet().fun_cmd("more_cmd", "todo_add", m.arg), (True, f"📝 Added to your list: {m.arg}"))[1],
+    "add_countdown": lambda m: _countdown(m.arg),
+    "show_todo": lambda _m: (_pet().fun_cmd("more_cmd", "todo_show"), (True, "📝 Your list is on the PC screen"))[1],
+    "dance_party": lambda _m: (_pet().fun_cmd("more_cmd", "dance"), (True, "🪩 Dance party on your PC!"))[1],
+    "make_rain": lambda _m: (_pet().fun_cmd("more_cmd", "rain"), (True, "🌧️ Making it rain on your screen"))[1],
+    "make_snow": lambda _m: (_pet().fun_cmd("more_cmd", "snow"), (True, "❄️ Let it snow!"))[1],
+    "drank_water": lambda _m: (_pet().fun_cmd("more_cmd", "water"), (True, "💧 Logged a glass of water!"))[1],
+    "tell_joke": lambda _m: (_pet().fun_cmd("more_cmd", "joke"), (True, "😂 BOT is telling a joke on the PC"))[1],
+    "talk_bot": lambda _m: (_pet().fun_cmd("more_cmd", "chat"), (True, "💬 BOT's chat window is open on the PC"))[1],
     "set_birthday": lambda m: _birthday(m.arg),
     "pet_off": lambda _m: (True, "Desktop BOT is hiding 🙈"),  # switches flipped in bot_agent
     "pet_on": lambda _m: (True, "Desktop BOT is back! 👋"),
@@ -425,7 +434,8 @@ POINTER_LABELS = {
 NO_BUBBLE = {"lock", "shutdown", "restart", "sleep", "help", "bubble_off", "feed_bot", "play_chase", "say_sorry",
              "focus_start", "focus_stop", "daily_report", "play_fetch", "hide_seek", "cookie_catch", "blow_bubbles",
              "play_rps", "play_ttt", "photo_booth", "tidy_desktop", "untidy_desktop", "love_you", "set_reminder",
-             "set_birthday"}
+             "set_birthday", "add_todo", "add_countdown", "show_todo", "dance_party", "make_rain", "make_snow",
+             "drank_water", "tell_joke", "talk_bot"}
 
 
 def _pet():
@@ -446,6 +456,16 @@ def _reminder(text: str):
     when, what = found
     _pet().fun_cmd("reminder_add", when.timestamp(), what)
     return True, f"⏰ I'll remind you {reminders.pretty(when)}: {what}"
+
+
+def _countdown(text: str):
+    import reminders
+    found = reminders.parse_countdown(text)
+    if not found:
+        return False, "Say it like \"countdown to my exam on 12 December\" 📅"
+    name, day = found
+    _pet().fun_cmd("more_cmd", "countdown_add", (name, day))
+    return True, f"📅 Countdown added: {name} on {day}"
 
 
 def _birthday(text: str):

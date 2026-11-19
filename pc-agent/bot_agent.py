@@ -39,6 +39,8 @@ import autostart
 import health
 import router
 import routines
+import pet_more
+import pet_ui
 import pet_world
 import reminders
 import tray as tray_mod
@@ -50,6 +52,7 @@ from overlay import BUBBLE
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
+BACKUP_PATH = HERE / "config.backup.json"   # last good settings (in case the PC loses power while saving)
 UNMATCHED_PATH = HERE / "unmatched.txt"
 LOG_PATH = HERE / "bot.log"
 PID_PATH = HERE / "bot.pid"
@@ -66,11 +69,40 @@ _tailscale_ip = ""  # refreshed in the background; shared with the phone for out
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def write_safely(path: Path, text: str) -> None:
+    """Write to a temp file, force it onto the disk, then swap it in: a power cut can't leave a broken file."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _read_json(path: Path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and data else None
+    except (OSError, ValueError):
+        return None
+
+
 def load_config() -> dict:
     cfg = {}
     if CONFIG_PATH.exists():
-        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    changed = False
+        cfg = _read_json(CONFIG_PATH)
+        if cfg is None:  # broken (e.g. the PC lost power while saving): keep it aside, use the backup
+            broken = CONFIG_PATH.with_name(f"config.broken-{datetime.now():%Y%m%d-%H%M%S}.json")
+            try:
+                CONFIG_PATH.replace(broken)
+            except OSError:
+                pass
+            cfg = _read_json(BACKUP_PATH) or {}
+            logging.getLogger("bot").warning("config.json was damaged; %s",
+                                             "restored from the backup" if cfg else "starting fresh")
+    elif BACKUP_PATH.exists():
+        cfg = _read_json(BACKUP_PATH) or {}
+    changed = not CONFIG_PATH.exists()
     if not cfg.get("pin"):
         cfg["pin"] = f"{secrets.randbelow(10**6):06d}"
         changed = True
@@ -83,7 +115,7 @@ def load_config() -> dict:
             cfg[key] = default
             changed = True
     if changed:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        write_safely(CONFIG_PATH, json.dumps(cfg, indent=2, ensure_ascii=False))
     return cfg
 
 
@@ -120,9 +152,19 @@ import threading as _threading
 _CFG_LOCK = _threading.Lock()  # the desktop BOT saves from its own thread
 
 
+_last_backup = [0.0]
+
+
 def save_config() -> None:
     with _CFG_LOCK:
-        CONFIG_PATH.write_text(json.dumps(CFG, indent=2, ensure_ascii=False), encoding="utf-8")
+        text = json.dumps(CFG, indent=2, ensure_ascii=False)
+        write_safely(CONFIG_PATH, text)
+        if time.time() - _last_backup[0] > 600:  # a rolling backup every 10 minutes
+            _last_backup[0] = time.time()
+            try:
+                write_safely(BACKUP_PATH, text)
+            except OSError:
+                pass
 
 
 def save_pet_life(data: dict) -> None:
@@ -316,6 +358,27 @@ async def intruder_photo(alert: dict) -> None:
         asyncio.create_task(send_file_to_phone(path))
     else:
         alert["message"] += " 📸 I took a photo (Pictures › BOT Intruders)."
+
+
+async def push_text(text: str) -> None:
+    """Text / a link dropped on the desktop BOT -> the phone's clipboard."""
+    if SESSIONS:
+        await broadcast(type="clip_push", text=text)
+    else:
+        PET.say("Connect your phone first 📱 then drop it on me again!", 4)
+
+
+def set_gemini_key() -> None:
+    def done(key):
+        if key is None:
+            return
+        CFG["gemini_key"] = key.strip()
+        save_config()
+        PET.gemini_key = CFG["gemini_key"]
+        PET.say("My Gemini brain is connected! 🧠💙 Let's talk" if key.strip() else "Okay, back to my own cute replies 💙", 5)
+
+    pet_ui.ask_text("BOT 🔑", "Paste your free Google Gemini API key (get one at aistudio.google.com). "
+                    "Leave it empty to use BOT's own replies.", done, initial=CFG.get("gemini_key", ""), secret=True)
 
 
 async def find_phone() -> None:
@@ -878,8 +941,23 @@ async def dispatch(sess: Session, msg: dict) -> None:
                 PET.fun_cmd("tidy_now")
             elif action == "untidy":
                 PET.fun_cmd("untidy")
+            elif action in ("buy", "dance", "rain", "snow", "water", "todo_add", "todo_toggle", "todo_del",
+                            "countdown_add", "countdown_del", "joke"):
+                if action == "countdown_add" and isinstance(value, dict):
+                    value = (str(value.get("name", ""))[:40], str(value.get("date", "")))
+                PET.fun_cmd("more_cmd", action, value)
         await asyncio.sleep(0.4)
         await send(sess.ws, type="pet_world", **PET.world())
+    elif kind == "chat":  # "Talk to BOT" from the phone
+        text = str(msg.get("text", "")).strip()[:500]
+        if text:
+            hist = getattr(sess, "chat", [])
+            hist.append(("user", text))
+            reply = await asyncio.to_thread(pet_more.chat_reply, text, hist, CFG.get("gemini_key", ""))
+            hist.append(("bot", reply))
+            sess.chat = hist[-30:]
+            await send(sess.ws, type="chat_reply", text=reply)
+            PET.say(reply, 6)
     elif kind == "media":  # music buttons on the phone
         if PET.fun:
             await asyncio.to_thread(PET.fun.media.control, str(msg.get("action", "")))
@@ -1085,6 +1163,8 @@ async def main() -> int:
         push_alert({"kind": "bot", "title": title, "message": message, "time": datetime.now().strftime("%H:%M")}), loop)
     PET.send_file_fn = lambda path: asyncio.run_coroutine_threadsafe(send_file_to_phone(path), loop)
     PET.out_fn = lambda m: asyncio.run_coroutine_threadsafe(broadcast(**m), loop)
+    PET.send_text_fn = lambda text: asyncio.run_coroutine_threadsafe(push_text(text), loop)
+    PET.gemini_key = CFG.get("gemini_key", "")
     PET.start()
     snipper = pet_world.SnipHotkey(
         on_image=lambda path: (PET.say("Snip! ✂️ Sending it to your phone 📲", 3),
@@ -1162,17 +1242,28 @@ async def main() -> int:
                          ("❌ Tic-tac-toe", lambda: PET.fun_cmd("game_start", "ttt")),
                          ("🏃 Chase", lambda: PET.start_chase(45)),
                          ("📸 Photo with BOT", lambda: PET.fun_cmd("game_start", "photo"))]),
-            ("💙 BOT", [("💖 Do you love me?", lambda: PET.fun_cmd("start_love")),
+            ("💙 BOT", [("💬 Talk to BOT", lambda: PET.fun_cmd("more_cmd", "chat")),
+                       ("📝 To-do list", lambda: PET.fun_cmd("more_cmd", "todo_show")),
+                       ("💧 I drank water", lambda: PET.fun_cmd("more_cmd", "water")),
+                       ("😂 Tell me a joke", lambda: PET.fun_cmd("more_cmd", "joke")),
+                       ("🪩 Dance party", lambda: PET.fun_cmd("more_cmd", "dance")),
+                       ("🌧️ Make it rain", lambda: PET.fun_cmd("more_cmd", "rain")),
+                       ("❄️ Make it snow", lambda: PET.fun_cmd("more_cmd", "snow")),
+                       ("✨ Good thing today", lambda: PET.fun_cmd("more_cmd", "good_thing")),
+                       ("💖 Do you love me?", lambda: PET.fun_cmd("start_love")),
                        ("🍅 Focus 25 minutes", lambda: PET.start_focus(25)),
                        ("📊 Daily report", PET.show_report),
                        ("💕 Say sorry", PET.apologize),
                        ("🧹 Tidy my desktop", lambda: PET.fun_cmd("tidy_now")),
-                       ("↩️ Undo desktop tidy", lambda: PET.fun_cmd("untidy"))]),
+                       ("↩️ Undo desktop tidy", lambda: PET.fun_cmd("untidy")),
+                       ("🔑 Gemini key for chat (optional, free)", set_gemini_key)]),
             ("📱 Phone", [("📢 Find my phone", from_tray(find_phone)),
                          (lambda _i: f"✂️ Snip to phone ({snipper.label})", lambda: _threading.Thread(target=snipper.snip, daemon=True).start()),
                          ("📲 Send BOT to my phone", lambda: PET.fun_cmd("travel", "phone"))]),
         ],
-        toggles=[("👏 Clap twice to call BOT", lambda: PET.life.d["options"].get("clap", True),
+        toggles=[("🔊 Cute sounds", lambda: PET.life.d["options"].get("sounds", False),
+                  lambda on: PET.fun_cmd("set_option", "sounds", on)),
+                 ("👏 Clap twice to call BOT", lambda: PET.life.d["options"].get("clap", True),
                   lambda on: PET.fun_cmd("set_option", "clap", on)),
                  ("😆 Cursor prank", lambda: PET.life.d["options"].get("cursor_prank", False),
                   lambda on: PET.fun_cmd("set_option", "cursor_prank", on)),

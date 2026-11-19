@@ -19,6 +19,10 @@ const _outfits = <String, String>{
   'flower': '🌸 Flower crown',
   'grad': '🎓 Grad cap',
   'halo': '😇 Halo',
+  'bunny': '🐰 Bunny ears',
+  'chef': '👨‍🍳 Chef hat',
+  'cowboy': '🤠 Cowboy hat',
+  'beret': '🎨 Beret',
 };
 
 /// Take care of the desktop BOT: food, happiness, level, games, focus timer, outfits.
@@ -145,7 +149,7 @@ class CarePage extends StatelessWidget {
                           ? o.value
                           : unlockAt[o.key] is num
                               ? '🔒 ${o.value} (level ${unlockAt[o.key]})'
-                              : '🔒 ${o.value} (badge: ${unlockAt[o.key]})'),
+                              : '🔒 ${o.value} (${unlockAt[o.key]})'),
                       selected: outfit == o.key,
                       onSelected: unlocked.contains(o.key) || !unlockAt.containsKey(o.key)
                           ? (_) => _do(context, 'outfit', o.key)

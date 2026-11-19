@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import health
 import pet_outfits
+import pet_dragdrop
 import pet_props
 import win_input
 from pet_cookie import Cookie
@@ -193,6 +194,10 @@ class Pet:
         self.cookie = Cookie()
         self.fun: Fun | None = None   # games, love, hugs, reminders... (made on BOT's thread)
         self.out_fn = None            # callback(dict) -> sent to the phone
+        self.send_text_fn = None      # callback(text) -> phone clipboard
+        self.gemini_key = ""          # optional free Gemini key for "Talk to BOT"
+        self._glass_rect = None       # where the water glass is (window px), to click it
+        self._drop = None
         self._walk_speed = 110.0
         self._fx: dict = {}
 
@@ -267,6 +272,9 @@ class Pet:
             w["weather"] = self.fun.weather.now
             w["playing"] = self.fun.media.now
             w["baby"] = bool(self.life.d.get("baby"))
+            if self.fun.more:
+                w.update(self.fun.more.world())
+        w["options"] = dict(self.life.d["options"])
         return w
 
     def stats(self) -> dict:
@@ -310,6 +318,10 @@ class Pet:
         if msg == 0x0215 and self.dragging:  # WM_CAPTURECHANGED
             self._release()
             return 0
+        if msg == 0x020A:            # WM_MOUSEWHEEL over BOT: change the volume
+            delta = ctypes.c_short((wparam >> 16) & 0xFFFF).value
+            self._q.put(("fun", "more_cmd", "volume", delta / 120))
+            return 0
         if msg == 0x0233:            # WM_DROPFILES: you dropped files on BOT
             self._dropped(wparam)
             return 0
@@ -351,12 +363,16 @@ class Pet:
         if self._moved < 6 and now - self._grab_t < 0.35:  # a click, not a throw
             cx, cy = win_input.cursor_pos()
             px, py = cx - self.x, cy - self.y
+            gr = self._glass_rect
             for x0, y0, x1, y1, value in self._chips:  # an answer button?
                 if x0 <= px <= x1 and y0 <= py <= y1:
                     self._q.put(("answer", value))
                     break
             else:
-                self._q.put(("click",))
+                if gr and gr[0] <= px <= gr[2] and gr[1] <= py <= gr[3]:
+                    self._q.put(("fun", "more_cmd", "water"))  # clicked the water glass
+                else:
+                    self._q.put(("click",))
             if not self.peek_side:
                 self.flying, self.vx, self.vy = True, 0.0, 0.0  # settle on the floor
             return
@@ -428,6 +444,8 @@ class Pet:
                 self.y = floor
                 self._hit(abs(self.vy))
                 if abs(self.vy) > 250:
+                    if self.fun and abs(self.vy) > 500:
+                        self.fun.sound("boing")
                     self.vy, self.vx = -self.vy * 0.45, self.vx * 0.8
                     self.squish = min(1.0, abs(self.vy) / 1200)
                 else:
@@ -438,6 +456,8 @@ class Pet:
                         self._hard_hit = False
                         self._dizzy_until = now + 3.2
                         self._q.put(("say", random.choice(DIZZY), 3.0))
+                        if self.fun:
+                            self.fun.sound("squeak")
                         self._emit("dizzy")
         elif self.walking:
             self.x += self._walk_dir * self._walk_speed * dt
@@ -567,6 +587,7 @@ class Pet:
         Stays politely behind true fullscreen apps (videos, games, slideshows)."""
         if self.fun and self.fun.hiding:
             return
+        house = self.fun.more.house.hwnd if (self.fun and self.fun.more and self.fun.more.house) else None
         fg = user32.GetForegroundWindow()
         if fg and fg not in (self._hwnd, self.cookie._hwnd):
             r, mon = wt.RECT(), wt.RECT()
@@ -578,7 +599,7 @@ class Pet:
                 and cls.value not in ("Progman", "WorkerW")  # (the desktop itself isn't "fullscreen")
             if fullscreen:
                 return
-        for hwnd in (self._hwnd, self.cookie._hwnd):
+        for hwnd in (house, self._hwnd, self.cookie._hwnd):
             if hwnd and user32.IsWindowVisible(hwnd):
                 user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # NOSIZE|NOMOVE|NOACTIVATE
 
@@ -587,6 +608,8 @@ class Pet:
         now = time.perf_counter()
         st["cookie_food"] = food
         st["cookie_t0"] = now - (0.7 if skip_fall else 0.0)
+        if self.fun:
+            self.fun.sound("munch")
         st["nap_until"] = st["sleep_ask_until"] = 0.0
         st["beg_until"] = st["cry_until"] = 0.0
         self._speak(st, random.choice(GOT_COOKIE) if skip_fall else "A cookie! For me?! 🍪🥺", 2.0)
@@ -631,6 +654,8 @@ class Pet:
             self._emit("petted")
         elif kind == "click":
             life.cheer(happy=5)
+            if self.fun:
+                self.fun.sound("chirp")
             if life.add_xp(2):
                 self._level_up(st)
             if now < st["cry_until"]:  # pat while crying: forgiven
@@ -695,6 +720,17 @@ class Pet:
                 st["react"], st["react_until"] = "happy", now + 2
             else:
                 self._speak(st, "I need to level up for that! 🥺", 3)
+        elif kind == "dropped":  # OLE drop: files or text
+            files, text = cmd[1], cmd[2]
+            files = [f for f in files if os.path.isfile(f)]
+            if files:
+                self._command(("swallow", files), st)
+            elif text.strip():
+                st["swallow_until"] = now + 1.6
+                short = text.strip().replace("\n", " ")
+                self._speak(st, f"Nom! 📋 Sending “{short[:30]}{'…' if len(short) > 30 else ''}” to your phone", 3.5)
+                if self.send_text_fn:
+                    self.send_text_fn(text.strip()[:100_000])
         elif kind == "swallow":  # files dropped on BOT -> phone
             names = [os.path.basename(p) for p in cmd[1]]
             st["swallow_until"] = now + 1.6
@@ -879,6 +915,8 @@ class Pet:
         if not self._hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
         shell32.DragAcceptFiles(self._hwnd, True)
+        # also accept dragged text / links (OLE drop target; files keep working through it too)
+        self._drop = pet_dragdrop.register(self._hwnd, lambda files, text: self._q.put(("dropped", files, text)))
         BUBBLE.origin = self.center  # the bubble cursor flies out of the desktop BOT
         self.cookie.setup(self.S, self.bounds)
 
@@ -952,6 +990,9 @@ class Pet:
             if life.add_xp(10):
                 self._level_up(st)
             self._notify("Focus done 🍅", f"{self.focus_minutes} minutes done! Take a short break 🎉")
+            if self.fun:
+                self.fun.coins(st, 10)
+                self.fun.count(st, "focus")
         chasing = now < self.chase_until
         if self.chase_until and not chasing and now - self.chase_until < 0.5:
             self.chase_until = 0.0
@@ -964,6 +1005,11 @@ class Pet:
         if 2.4 < cookie_age < 2.6:
             st["cookie_t0"] = -99.0
             life.cheer(happy=8, hunger=st["cookie_food"])
+            st["food_emoji"] = ""
+            if self.fun:
+                self.fun.coins(st, 1)
+                self.fun.count(st, "cookies")
+                self.fun.badges(st, life.fed_today())
             if life.add_xp(5):
                 self._level_up(st)
             self._speak(st, "Yum! 😋 Thank you! 💕", 3)
@@ -1107,7 +1153,10 @@ class Pet:
             elif st["active_min"] >= st["next_reminder_min"]:
                 st["next_reminder_min"] = st["active_min"] + 60
                 st["reminder_i"] += 1
-                self._speak(st, random.choice(WATER if st["reminder_i"] % 2 else STRETCH), 6)
+                if st["reminder_i"] % 2:
+                    self._speak(st, random.choice(WATER), 20, (("I drank! 💧", "water:drank"),))
+                else:
+                    self._speak(st, random.choice(STRETCH), 6)
             elif (hour >= 23 or hour < 5) and now > st["next_night"]:
                 st["next_night"] = now + 30 * 60
                 self._speak(st, random.choice(NIGHT), 5)
@@ -1181,6 +1230,11 @@ class Pet:
             stats_text = f"Lv {life.level} · 🍪 {round(life.d['hunger'])}% · 💖 {round(life.d['happy'])}%"
             if self.fun and self.fun.wpm >= 15:
                 stats_text += f" · ⌨️ {self.fun.wpm} WPM"
+            if self.fun and self.fun.more:
+                stats_text += f" · 🪙 {int(life.d.get('coins', 0))}"
+                cd = self.fun.more.countdown_line()
+                if cd:
+                    stats_text += f" · {cd}"
         focus_text = ""
         if focusing and not st["speech"] and not stats_text:
             left_s = int(self.focus_until - time.time())
@@ -1207,8 +1261,7 @@ class Pet:
             p[5] -= 1 / 12
         st["particles"] = [p for p in st["particles"] if p[5] > 0]
 
-        target_alpha = 255 if self.wanted and not self.away_until and not (
-            self.fun and (self.fun.gone is True or (self.fun.game and self.fun.game.get("phase") == "vanish"))) else 0
+        target_alpha = 255 if self.wanted and not self.away_until and not (self.fun and self.fun.invisible()) else 0
         self._alpha += (target_alpha - self._alpha) * 0.35
         if abs(target_alpha - self._alpha) < 3:
             self._alpha = float(target_alpha)
@@ -1251,12 +1304,12 @@ class Pet:
                (int(t * 2) if mood == "sweaty" else 0), (int(t * 12) if mood in ("dizzy", "cry") else 0),
                round(self.angle), round(self.squish * 10), props, under,
                int(min(0.0, self.bounds[2] - (self.x + self.W)) // 12), int(max(0.0, self.bounds[0] - self.x) // 12),
-               int(t * 8) if props or under else 0)
+               int(t * 8) if props or under else 0, bool(fx.get("night")))
         return {"mood": mood, "open": openness, "look": st["look"], "yawn": yawning, "bounce": bounce,
                 "breathe": breathe, "tilt": tilt, "alpha": self._alpha, "sig": sig, "active": active, "t": t,
                 "particles": list(st["particles"]), "speech": show_speech, "options": options,
                 "stats": stats_text, "focus": focus_text, "outfit": outfit, "chomp": chomp, "cookie": cookie_y,
-                "props": props, "under": under}
+                "props": props, "under": under, "night": bool(fx.get("night")), "food": st.get("food_emoji", "")}
 
     def _outfit(self, mood: str, feeling: str, focusing: bool, hour: int, special: str | None = None) -> str:
         choice = self.life.d.get("outfit", "auto")
@@ -1298,6 +1351,16 @@ class Pet:
             self._body_cache = img
         return self._body_cache
 
+    def _night_glow(self) -> Image.Image:
+        g = getattr(self, "_glow_cache", None)
+        if g is None:
+            w, h = int(self.BW * SS * 1.7), int(self.BH * SS * 1.7)
+            g = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            ImageDraw.Draw(g).ellipse((w * 0.12, h * 0.12, w * 0.88, h * 0.88), fill=(255, 220, 140, 95))
+            g = g.filter(ImageFilter.GaussianBlur(14 * SS))
+            self._glow_cache = g
+        return g
+
     def _shadow(self) -> Image.Image:
         if self._shadow_cache is None:
             w, h = int(self.BW * SS * 0.9), int(self.S * 0.12 * SS)
@@ -1306,14 +1369,14 @@ class Pet:
             self._shadow_cache = sh.filter(ImageFilter.GaussianBlur(5 * SS))
         return self._shadow_cache
 
-    def _speech_bubble(self, text: str, options=(), pill: bool = False):
+    def _speech_bubble(self, text: str, options=(), pill: bool = False, small: bool = False, avail: int = 0):
         """Speech bubble (optionally with answer buttons). Returns (image, [(x0,y0,x1,y1,value)...])."""
-        key = (text, options, pill)
+        key = (text, options, pill, small, avail)
         if key not in self._bubble_cache:
-            font = _font(int((12.5 if pill else 13.5) * self.scale * SS))
+            font = _font(int((12.5 if pill else 13.5) * (0.88 if small else 1.0) * self.scale * SS))
             small = _font(int(12 * self.scale * SS))
             pad = int((7 if pill else 10) * self.scale * SS)
-            max_w = self.W * SS - 2 * pad - 8 * SS
+            max_w = min(self.W * SS, avail or self.W * SS) - 2 * pad - 8 * SS  # narrower near a screen edge
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             words, lines, cur = text.split(), [], ""
             for w in words:  # wrap to the window width
@@ -1386,6 +1449,9 @@ class Pet:
         lift = int(p["bounce"] * self.S * SS)
         x0 = (W - bw) // 2
         y0 = int(H - self.FOOT_GAP * SS - self.S * 0.08 * SS - bh) - lift
+        if p.get("night"):  # night light: a soft warm glow
+            glow = self._night_glow()
+            img.alpha_composite(glow, ((W - glow.width) // 2, int(y0 + bh / 2 - glow.height / 2)))
         if not self.flying:  # soft shadow on the floor
             sh = self._shadow()
             img.alpha_composite(sh, ((W - sh.width) // 2, int(H - self.FOOT_GAP * SS - sh.height * 0.62)))
@@ -1525,8 +1591,12 @@ class Pet:
         if p["outfit"] != "none":
             if not pet_props.outfit(d, p["outfit"], x0, y0, bw, bh, SS, t):
                 pet_outfits.draw(d, p["outfit"], x0, y0, bw, bh, eyes, er, SS, t)
-        for item in p.get("props", ()):  # popcorn, glasses, umbrella, note, festival things...
-            pet_props.over(d, item[0], x0, y0, bw, bh, eyes, er, SS, t, font=_font(int(15 * SS * self.scale)))
+        self._glass_rect = None
+        for item in p.get("props", ()):  # popcorn, glasses, umbrella, note, festival things, water glass...
+            pet_props.over(d, item[0], x0, y0, bw, bh, eyes, er, SS, t, font=_font(int(15 * SS * self.scale)),
+                           arg=item[1] if len(item) > 1 else None)
+            if item[0] == "glass":
+                self._glass_rect = ((x0 - bw * 0.4) / SS, (y0 + bh * 0.45) / SS, (x0 - bw * 0.06) / SS, (y0 + bh * 1.02) / SS)
 
         # extras
         if mood == "dizzy":  # stars circling the head
@@ -1540,7 +1610,10 @@ class Pet:
             r = 6 * SS * self.scale
             d.polygon([(sx, sy - r * 1.8), (sx - r, sy), (sx + r, sy)], fill=(140, 210, 255, 230))
             d.ellipse((sx - r, sy - r, sx + r, sy + r), fill=(140, 210, 255, 230))
-        if p["cookie"] is not None:  # a cookie falling into BOT's mouth
+        if p["cookie"] is not None and p.get("food"):  # a treat from the shop falling into BOT's mouth
+            cyk = (y0 - bh * 0.6) + (my - (y0 - bh * 0.6)) * p["cookie"]
+            d.text((cx, cyk), p["food"], font=_font(int(24 * SS * self.scale)), anchor="mm", embedded_color=True)
+        elif p["cookie"] is not None:  # a cookie falling into BOT's mouth
             ck = 11 * SS * self.scale
             cyk = (y0 - bh * 0.6) + (my - (y0 - bh * 0.6)) * p["cookie"]
             d.ellipse((cx - ck, cyk - ck, cx + ck, cyk + ck), fill=(205, 140, 70, 255), outline=(160, 100, 45, 255),
@@ -1565,6 +1638,8 @@ class Pet:
                 d.text((x, y), "💢", font=_font(int(16 * SS * self.scale)), anchor="mm", embedded_color=True)
             elif kind == "note":
                 d.text((x, y), "🎵", font=_font(int(16 * SS * self.scale)), anchor="mm", embedded_color=True)
+            elif kind == "coin":
+                d.text((x, y), "🪙", font=_font(int(14 * SS * self.scale)), anchor="mm", embedded_color=True)
             elif kind == "fire":
                 d.text((x, y), "🔥", font=_font(int(13 * SS * self.scale)), anchor="mm", embedded_color=True)
             elif kind == "confetti":
@@ -1576,11 +1651,17 @@ class Pet:
 
         # speech bubble / stats / focus timer above BOT (higher if wearing a hat)
         self._chips = []
-        hat = pet_outfits.HAT_HEIGHT * bh if (pet_outfits.has_hat(p["outfit"]) or p["outfit"] in ("grad", "halo")
+        hat = pet_outfits.HAT_HEIGHT * bh if (pet_outfits.has_hat(p["outfit"])
+                                              or p["outfit"] in ("grad", "halo", "bunny", "chef", "cowboy")
                                               or any(i[0] in ("umbrella", "kite", "toran") for i in p.get("props", ()))) else 0
         label = p["speech"] or p["stats"] or p["focus"]
         if label:
-            sb, chips = self._speech_bubble(label, p["options"], pill=not p["speech"])
+            vis_l = max(0, int((self.bounds[0] - self.x) * SS))
+            vis_r = min(W, int((self.bounds[2] - self.x) * SS))
+            avail = (vis_r - vis_l) - 6 * SS
+            avail = avail if avail < W - 8 * SS else 0
+            sb, chips = self._speech_bubble(label, p["options"], pill=not p["speech"], small=bool(p.get("night")),
+                                            avail=max(int(150 * SS * self.scale), avail) if avail else 0)
             # keep the bubble on the screen even when BOT stands at the very edge
             lo = max(0, int((self.bounds[0] - self.x) * SS) + 2 * SS)
             hi = min(W, int((self.bounds[2] - self.x) * SS) - 2 * SS) - sb.width
