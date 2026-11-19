@@ -58,6 +58,9 @@ class BotConnection extends ChangeNotifier {
   Map<String, dynamic> walkaway = {'enabled': false, 'minutes': 1};
   final health = ValueNotifier<Map<String, dynamic>?>(null); // cpu, ram, battery, charging, feeling
   final petStats = ValueNotifier<Map<String, dynamic>?>(null); // desktop BOT: level, hunger, happy, outfit
+  final world = ValueNotifier<Map<String, dynamic>?>(null); // love meter, badges, diary, moods, moments...
+  final nowPlaying = ValueNotifier<Map<String, dynamic>?>(null); // music playing on the PC
+  bool botOnPhone = false; // the desktop BOT followed you to the phone
   final Map<String, ({IOSink sink, String path})> _downloads = {}; // files coming from the PC
   final _fileEvents = StreamController<Map<String, dynamic>>.broadcast();
 
@@ -269,6 +272,8 @@ class BotConnection extends ChangeNotifier {
         if (msg['walkaway'] is Map) walkaway = Map<String, dynamic>.from(msg['walkaway'] as Map);
         if (msg['health'] is Map) health.value = Map<String, dynamic>.from(msg['health'] as Map);
         if (msg['pet_stats'] is Map) petStats.value = Map<String, dynamic>.from(msg['pet_stats'] as Map);
+        if (msg['now_playing'] is Map) nowPlaying.value = Map<String, dynamic>.from(msg['now_playing'] as Map);
+        botOnPhone = (msg['pet_stats'] is Map) && (msg['pet_stats'] as Map)['away'] == true;
         final away = msg['away_alerts'];
         if (away is List && away.isNotEmpty) {
           final lines = [
@@ -308,6 +313,16 @@ class BotConnection extends ChangeNotifier {
         health.value = msg;
       case 'pet_stats':
         petStats.value = msg;
+      case 'pet_world':
+        world.value = msg;
+      case 'now_playing':
+        nowPlaying.value = msg;
+      case 'find_phone':
+        _events.add(const BotEvent('find_phone', ''));
+      case 'pet_travel':
+        botOnPhone = msg['where'] == 'phone';
+        notifyListeners();
+        _events.add(BotEvent('travel', (msg['where'] ?? '').toString()));
       case 'file_down':
         _startDownload((msg['id'] ?? '').toString(), (msg['name'] ?? 'file').toString());
       case 'file_down_chunk':
@@ -399,6 +414,11 @@ class BotConnection extends ChangeNotifier {
     }
     _events.add(BotEvent('log', 'Couldn\'t save $name on this phone', ok: false));
   }
+
+  void requestWorld() => send({'type': 'pet_world'});
+
+  void petFun(String action, [Object? value]) =>
+      send({'type': 'pet_fun', 'action': action, if (value != null) 'value': value});
 
   void petAction(String action, [Object? value]) =>
       send({'type': 'pet_action', 'action': action, if (value != null) 'value': value});
@@ -541,6 +561,8 @@ class BotConnection extends ChangeNotifier {
     screenInfo.dispose();
     health.dispose();
     petStats.dispose();
+    world.dispose();
+    nowPlaying.dispose();
     for (final d in _downloads.values) {
       d.sink.close();
     }

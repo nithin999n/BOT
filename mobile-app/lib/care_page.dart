@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'connection.dart';
 import 'face.dart';
 import 'style.dart';
+import 'world_page.dart';
 
 const _outfits = <String, String>{
   'auto': '✨ Auto',
@@ -15,6 +16,9 @@ const _outfits = <String, String>{
   'santa': '🎅 Santa hat',
   'headband': '🎧 Headband',
   'cap': '🧢 Cap',
+  'flower': '🌸 Flower crown',
+  'grad': '🎓 Grad cap',
+  'halo': '😇 Halo',
 };
 
 /// Take care of the desktop BOT: food, happiness, level, games, focus timer, outfits.
@@ -139,13 +143,21 @@ class CarePage extends StatelessWidget {
                     ChoiceChip(
                       label: Text(unlocked.contains(o.key) || !unlockAt.containsKey(o.key)
                           ? o.value
-                          : '🔒 ${o.value} (level ${unlockAt[o.key]})'),
+                          : unlockAt[o.key] is num
+                              ? '🔒 ${o.value} (level ${unlockAt[o.key]})'
+                              : '🔒 ${o.value} (badge: ${unlockAt[o.key]})'),
                       selected: outfit == o.key,
                       onSelected: unlocked.contains(o.key) || !unlockAt.containsKey(o.key)
                           ? (_) => _do(context, 'outfit', o.key)
                           : null,
                     ),
                 ],
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => WorldPage(conn: conn))),
+                icon: const Text('🌍'),
+                label: const Text("Games, love, diary, badges… BOT's world"),
               ),
               const SizedBox(height: 16),
               Text(

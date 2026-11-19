@@ -11,7 +11,9 @@ import 'care_page.dart';
 import 'connection.dart';
 import 'dashboard_page.dart';
 import 'face.dart';
+import 'find_phone.dart';
 import 'gamepad_page.dart';
+import 'notify_bridge.dart';
 import 'routines_page.dart';
 import 'safety_word.dart';
 import 'screen_page.dart';
@@ -20,6 +22,7 @@ import 'style.dart';
 import 'touchpad_page.dart';
 import 'transfer.dart';
 import 'voice.dart';
+import 'world_page.dart';
 
 class Lang {
   const Lang(this.code, this.locale, this.label);
@@ -75,6 +78,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final BotConnection conn = BotConnection();
+  late final NotifyBridge _bridge = NotifyBridge(conn);
   final Voice voice = Voice();
   StreamSubscription<BotEvent>? _eventSub;
 
@@ -118,6 +122,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _eventSub = conn.events.listen(_onEvent);
     style.addListener(_onChange);
     conn.health.addListener(_onChange);
+    conn.nowPlaying.addListener(_onChange);
+    _bridge.load();
     loadStyle();
     try {
       _accelSub = userAccelerometerEventStream().listen(_onAccel, onError: (Object _) {});
@@ -142,6 +148,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     voice.removeListener(_onChange);
     style.removeListener(_onChange);
     conn.health.removeListener(_onChange);
+    conn.nowPlaying.removeListener(_onChange);
+    _bridge.dispose();
     _accelSub?.cancel();
     _eventSub?.cancel();
     for (final t in [_flashTimer, _waitTimer, _holdTimer]) {
@@ -310,6 +318,41 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  /// Music playing on the PC: title + ⏮ ⏯ ⏭
+  Widget _musicCard() {
+    final m = conn.nowPlaying.value;
+    if (m == null || !conn.online || m['playing'] != true || '${m['title'] ?? ''}'.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final artist = '${m['artist'] ?? ''}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, left: 24, right: 24),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+          child: Row(children: [
+            const Text('🎵 '),
+            Expanded(
+              child: Text('${m['title']}${artist.isEmpty ? '' : ' — $artist'}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+            ),
+            for (final a in const [('prev', Icons.skip_previous), ('toggle', Icons.pause), ('next', Icons.skip_next)])
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                iconSize: 20,
+                icon: Icon(a.$2),
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  conn.send({'type': 'media', 'action': a.$1});
+                },
+              ),
+          ]),
+        ),
+      ),
+    );
+  }
+
   /// Shake the phone -> BOT gets dizzy.
   void _onAccel(UserAccelerometerEvent e) {
     final g = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
@@ -439,6 +482,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addLog(e.message, ok: e.ok);
       case 'alert':
         _showAlert(e.id, e.message);
+      case 'find_phone':
+        _flashMood(Mood.excited, const Duration(seconds: 3));
+        showFindPhone(context);
+      case 'travel':
+        if (e.message == 'phone') {
+          HapticFeedback.mediumImpact();
+          setState(() => _poke++);
+          _flashMood(Mood.love, const Duration(seconds: 3));
+          _say(_rnd.nextBool() ? 'I followed you! 🥰📱 The PC was lonely without you' : 'Hiii! I came to your phone! 🥰');
+          _addLog('📱 BOT followed you to your phone');
+        } else if (e.message == 'pc') {
+          _flashMood(Mood.wink);
+          _say('Bye! I went back to the PC 👋💻');
+        }
       case 'file_received':
         final name = e.message.split('/').last;
         final where = e.message.contains('/Download/') ? 'Download/BOT' : 'the BOT app folder';
@@ -452,6 +509,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           setState(() => _poke++);
           _flashMood(Mood.dizzy, const Duration(milliseconds: 3000));
           _say(_rnd.nextBool() ? 'Ouch! Someone threw me on the PC! 😵' : 'Wheee… *bonk* 😵‍💫 my head is spinning!');
+        } else if (e.message == 'hug') {
+          HapticFeedback.mediumImpact();
+          _flashMood(Mood.love, const Duration(milliseconds: 2500));
+          _say('You hugged me on the PC! 🤗💙');
         } else if (e.message == 'petted') {
           _flashMood(Mood.love, const Duration(milliseconds: 2000));
           _say('Hehe, someone petted me on the PC 🥰');
@@ -812,6 +873,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   _open(DashboardPage(conn: conn));
                 case 'care':
                   _open(CarePage(conn: conn));
+                case 'world':
+                  _open(WorldPage(conn: conn));
                 case 'transfer':
                   showTransfer(context, conn);
                 case 'style':
@@ -824,6 +887,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'routines', child: Text('Routines')),
+              const PopupMenuItem(value: 'world', child: Text("BOT's world 🌍")),
               const PopupMenuItem(value: 'care', child: Text('Take care of BOT 🍪')),
               const PopupMenuItem(value: 'health', child: Text('PC health')),
               CheckedPopupMenuItem(
@@ -881,6 +945,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               _face(faceSize),
               _captionBubble(),
               _healthChip(),
+              _musicCard(),
               const SizedBox(height: 8),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),

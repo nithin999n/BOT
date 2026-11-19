@@ -316,7 +316,9 @@ class Life:
         """What the phone shows in the Care card."""
         return {"level": self.level, "xp": int(self.d["xp"]), "hunger": round(self.d["hunger"]),
                 "happy": round(self.d["happy"]), "outfit": self.d.get("outfit", "auto"),
-                "unlocked": [o for o in OUTFITS if self.unlocked(o)], "unlock_at": OUTFIT_UNLOCK}
+                "unlocked": [o for o in OUTFITS if self.unlocked(o)],
+                "unlock_at": {**OUTFIT_UNLOCK, **{o: next(n for b, n, *_ in BADGES if b == bid)
+                                                  for o, bid in BADGE_OUTFITS.items()}}}
 
 
 # ---- key counter (counts presses only; never which key) --------------------------------

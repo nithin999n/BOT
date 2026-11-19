@@ -1,7 +1,7 @@
 name: bot_app
 description: BOT - control your PC with your voice.
 publish_to: "none"
-version: 0.9.0+12
+version: 1.0.0+13
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -15,9 +15,13 @@ dependencies:
   # versions confirmed to work with the Flutter used by the build (3.50)
   sensors_plus: ^7.1.1
   file_picker: ^13.3.3
+  audioplayers: ^6.8.1
+  notification_listener_service: ^1.0.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/find_phone.wav
