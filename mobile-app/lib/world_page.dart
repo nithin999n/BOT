@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 
 import 'connection.dart';
 import 'face.dart';
-import 'notify_bridge.dart';
 import 'style.dart';
 
 const _feelings = {'great': '😊', 'okay': '😐', 'sad': '😢', 'tired': '😴', 'angry': '😡'};
@@ -203,7 +202,6 @@ class _WorldPageState extends State<WorldPage> {
           final playing = (w['playing'] as Map?) ?? const {};
           final weather = (w['weather'] as Map?) ?? const {};
           final got = badges.where((b) => b['got'] == true).length;
-          final bridge = NotifyBridge.instance;
           return ListView(
             padding: const EdgeInsets.all(14),
             children: [
@@ -427,21 +425,6 @@ class _WorldPageState extends State<WorldPage> {
                   value: opts['intruder_photo'] != false,
                   onChanged: (v) => conn.send({'type': 'set_option', 'key': 'intruder_photo', 'value': v}),
                 ),
-                if (bridge != null)
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Show my calls & messages on the PC 📞'),
-                    subtitle: const Text('BOT holds up a sign: "📞 Mom is calling!" (needs Notification access)'),
-                    value: bridge.enabled,
-                    onChanged: (v) async {
-                      final ok = await bridge.setEnabled(v);
-                      if (!ok && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                            content: Text('Allow "Notification access" for BOT, then switch this on again')));
-                      }
-                      if (mounted) setState(() {});
-                    },
-                  ),
               ]),
             ],
           );

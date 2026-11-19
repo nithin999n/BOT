@@ -135,7 +135,7 @@ Look in the **^** area next to the clock (drag the icon onto the taskbar to keep
   - 🌙 Good-night routine: BOT tucks in and asks to put the PC to sleep. 👶 Baby BOT hatches at level 6.
   - 📱 BOT follows you to your phone after 10 idle minutes and comes back when you do. 📢 Find my phone (tray).
     ✂️ Snip to phone: **Ctrl+Alt+P**. 📸 Photo when someone unlocks the PC while you're away (switch in the app).
-    📞 Calls & messages on the PC (app → BOT's world → Settings, needs Notification access).
+    (Showing phone calls on the PC was removed: Google Play Protect blocks sideloaded apps that read notifications.)
 - **Control → Air mouse:** hold the pad and point your phone like a TV remote. Tap to click, and use ◀ ▶ for slides.
 - **Control → Gamepad:** a landscape joystick (WASD or arrows) plus Jump/E/F/Q/R/Shift/Ctrl/Esc/Tab/Enter.
   Every key can be held, and the keys are sent as hardware key presses, so games notice them.

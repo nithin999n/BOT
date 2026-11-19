@@ -34,19 +34,6 @@ for perm in PERMISSIONS:
 if "android.speech.RecognitionService" not in s:
     s = s.replace("</manifest>", SPEECH_QUERY + "</manifest>", 1)
 
-# "Show my calls & messages on the PC" (off until the user allows Notification access)
-NOTIFY_SERVICE = """        <service android:label="BOT: show calls on the PC"
-            android:name="notification.listener.service.NotificationListener"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-        </service>
-"""
-if "notification.listener.service.NotificationListener" not in s:
-    s = s.replace("</application>", NOTIFY_SERVICE + "    </application>", 1)
-
 manifest.write_text(s, encoding="utf-8")
 print(s)
 if "RECORD_AUDIO" not in s or "RecognitionService" not in s:

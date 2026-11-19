@@ -13,7 +13,6 @@ import 'dashboard_page.dart';
 import 'face.dart';
 import 'find_phone.dart';
 import 'gamepad_page.dart';
-import 'notify_bridge.dart';
 import 'routines_page.dart';
 import 'safety_word.dart';
 import 'screen_page.dart';
@@ -78,7 +77,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final BotConnection conn = BotConnection();
-  late final NotifyBridge _bridge = NotifyBridge(conn);
   final Voice voice = Voice();
   StreamSubscription<BotEvent>? _eventSub;
 
@@ -123,7 +121,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     style.addListener(_onChange);
     conn.health.addListener(_onChange);
     conn.nowPlaying.addListener(_onChange);
-    _bridge.load();
     loadStyle();
     try {
       _accelSub = userAccelerometerEventStream().listen(_onAccel, onError: (Object _) {});
@@ -149,7 +146,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     style.removeListener(_onChange);
     conn.health.removeListener(_onChange);
     conn.nowPlaying.removeListener(_onChange);
-    _bridge.dispose();
     _accelSub?.cancel();
     _eventSub?.cancel();
     for (final t in [_flashTimer, _waitTimer, _holdTimer]) {

@@ -1,7 +1,7 @@
 name: bot_app
 description: BOT - control your PC with your voice.
 publish_to: "none"
-version: 1.0.0+13
+version: 1.0.1+14
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -16,7 +16,6 @@ dependencies:
   sensors_plus: ^7.1.1
   file_picker: ^13.3.3
   audioplayers: ^6.8.1
-  notification_listener_service: ^1.0.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0
